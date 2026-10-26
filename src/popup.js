@@ -2,7 +2,7 @@ import { DEFAULT_BASE_URL, STORAGE_KEYS, UPDATE_REPOSITORY, compareVersions } fr
 import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from './links.js';
 import { SNOOZE_OPTIONS, createSnooze, pruneSnoozed } from './snooze.js';
-import { deriveView, itemsByKey } from './view.js';
+import { REQUIRED_TOKEN_SCOPE, deriveView, itemsByKey, tokenProblems } from './view.js';
 
 const SECTIONS = [
   { id: 'reviewing', title: 'Меня назначили ревьюером', empty: 'Нет MR на ревью' },
@@ -11,6 +11,7 @@ const SECTIONS = [
   { id: 'awaitingApproval', title: 'Ждут моего апрува', empty: 'Всё заапрувлено' },
   { id: 'threads', title: 'Ждут моего ответа в тредах', empty: 'Нет неотвеченных тредов' },
   { id: 'authored', title: 'Мои MR', empty: 'Нет открытых MR' },
+  { id: 'brokenBranches', title: 'Сломан default branch', empty: 'Default branch зелёные во всех проектах' },
 ];
 
 const STATUS_TAGS = {
@@ -28,7 +29,26 @@ const STATUS_TAGS = {
   blocked_status: { label: 'заблокирован', tone: 'bad' },
   checking: { label: 'проверяется', tone: '' },
   unchecked: { label: 'не проверен', tone: '' },
+  preparing: { label: 'готовится', tone: '' },
+  approvals_syncing: { label: 'апрувы синхронизируются', tone: '' },
+  draft_status: { label: 'draft', tone: 'warn' },
+  not_open: { label: 'закрыт', tone: '' },
+  commits_status: { label: 'проблема с коммитами', tone: 'bad' },
+  merge_request_blocked: { label: 'заблокирован другим MR', tone: 'bad' },
+  status_checks_must_pass: { label: 'внешние проверки', tone: 'bad' },
+  jira_association_missing: { label: 'нет задачи Jira', tone: 'bad' },
+  title_regex: { label: 'название не по шаблону', tone: 'bad' },
+  locked_paths: { label: 'заблокированы пути', tone: 'bad' },
+  locked_lfs_files: { label: 'заблокированы LFS-файлы', tone: 'bad' },
+  security_policy_violations: { label: 'нарушены политики', tone: 'bad' },
+  merge_time: { label: 'ждёт времени мёржа', tone: 'warn' },
 };
+
+const AGE_THRESHOLDS = [
+  { days: 7, tone: 'bad' },
+  { days: 3, tone: 'warn' },
+];
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const PIPELINE_STATUS_TAGS = {
   success: { label: 'CI ок', tone: 'ok' },
@@ -73,6 +93,7 @@ const elements = {
   meta: document.getElementById('meta'),
   error: document.getElementById('error'),
   update: document.getElementById('update'),
+  token: document.getElementById('token'),
   sections: document.getElementById('sections'),
   refresh: document.getElementById('refresh'),
   settings: document.getElementById('settings'),
@@ -96,6 +117,16 @@ function formatRelative(isoDate) {
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours} ч назад`;
   return `${Math.round(hours / 24)} д назад`;
+}
+
+function renderAge(isoDate) {
+  const ageDays = (Date.now() - new Date(isoDate).getTime()) / DAY_MS;
+  const tone = AGE_THRESHOLDS.find(({ days }) => ageDays >= days)?.tone;
+  return createElement('span', {
+    className: tone ? `age ${tone}` : 'age',
+    text: formatRelative(isoDate),
+    attrs: { title: new Date(isoDate).toLocaleString('ru-RU') },
+  });
 }
 
 const openUrl = (url) => chrome.tabs.create({ url });
@@ -216,13 +247,21 @@ function authorLabel(item, sectionId) {
   if (sectionId === 'mentioned') {
     return `от @${item.mentionedBy.join(', @')}`;
   }
-  return `@${item.author}`;
+  return item.author ? `@${item.author}` : null;
+}
+
+function statusTag(item) {
+  const pipelineStatus = item.pipeline ? PIPELINE_STATUS_TAGS[item.pipeline.status] : null;
+  const hasPipelineTag = Boolean(pipelineStatus) || item.pipeline?.status === 'failed';
+  const status = hasPipelineTag && CI_MERGE_STATUSES.has(item.status) ? null : STATUS_TAGS[item.status];
+  return status && !(item.draft && item.status === 'draft_status') ? tag(status.label, status.tone) : null;
 }
 
 function renderItem(item, sectionId, baseUrl) {
   const targetUrl = sectionId === 'mentioned' && item.mentionUrl ? item.mentionUrl : item.webUrl;
   const webUrl = isUnderBaseUrl(targetUrl, baseUrl) ? targetUrl : baseUrl;
   const tags = [];
+  if (item.kind === 'issue') tags.push(tag('задача'));
   if (item.draft) tags.push(tag('draft'));
   if (sectionId === SNOOZED_SECTION.id) tags.push(tag(formatSnooze(item.snooze)));
   if (sectionId === 'mentioned' && item.mentionCount > 1) tags.push(tag(`упоминаний: ${item.mentionCount}`, 'warn'));
@@ -232,18 +271,23 @@ function renderItem(item, sectionId, baseUrl) {
   if (sectionId === 'authored') {
     tags.push(tag(`апрувов: ${item.approvalsCount}`, item.approvalsCount > 0 ? 'ok' : ''));
     const pipelineStatus = showsPipeline ? PIPELINE_STATUS_TAGS[item.pipeline.status] : null;
-    const hasPipelineTag = Boolean(pipelineStatus) || item.pipeline?.status === 'failed';
-    const status = hasPipelineTag && CI_MERGE_STATUSES.has(item.status) ? null : STATUS_TAGS[item.status];
-    if (status) tags.push(tag(status.label, status.tone));
+    const status = statusTag(item);
+    if (status) tags.push(status);
     if (pipelineStatus) tags.push(tag(pipelineStatus.label, pipelineStatus.tone));
+  } else if (sectionId === 'assigned') {
+    const status = statusTag(item);
+    if (status) tags.push(status);
+    if (item.hasConflicts && item.status !== 'conflict') tags.push(tag('конфликт', 'bad'));
   } else if (item.hasConflicts) {
     tags.push(tag('конфликт', 'bad'));
   }
+  if (sectionId === 'brokenBranches') tags.push(tag('CI упал', 'bad'));
 
+  const author = sectionId === 'authored' ? null : authorLabel(item, sectionId);
   const subline = createElement('span', { className: 'sub' }, [
     createElement('span', { text: item.reference }),
-    ...(sectionId === 'authored' ? [] : [createElement('span', { text: authorLabel(item, sectionId) })]),
-    createElement('span', { text: formatRelative(sectionId === 'mentioned' ? (item.mentionedAt ?? item.updatedAt) : item.updatedAt) }),
+    ...(author ? [createElement('span', { text: author })] : []),
+    renderAge(sectionId === 'mentioned' ? (item.mentionedAt ?? item.updatedAt) : item.updatedAt),
     ...tags,
   ]);
   const link = createElement('a', { attrs: { href: webUrl, title: item.title } }, [
@@ -276,7 +320,8 @@ const isCompleteDashboard = (dashboard) =>
   !dashboard.skippedProjects &&
   !dashboard.projectsUnavailable &&
   !dashboard.mentionsUnavailable &&
-  !dashboard.assignedUnavailable;
+  !dashboard.assignedUnavailable &&
+  !dashboard.defaultBranchesUnavailable;
 
 async function writeSnoozed(change) {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.userState);
@@ -351,9 +396,26 @@ function renderSection(section, items, baseUrl, { collapsed = false } = {}) {
   return details;
 }
 
+function renderTokenNotice(dashboard) {
+  const problems = dashboard?.baseUrl ? tokenProblems(dashboard.token) : [];
+  elements.token.hidden = problems.length === 0;
+  if (!problems.length) {
+    elements.token.replaceChildren();
+    return;
+  }
+  const url = `${dashboard.baseUrl}/-/user_settings/personal_access_tokens?name=MR+Radar&scopes=${REQUIRED_TOKEN_SCOPE}`;
+  const link = createElement('a', { text: 'Создать новый токен', attrs: { href: url } });
+  link.addEventListener('click', (event) => {
+    event.preventDefault();
+    openUrl(url);
+  });
+  elements.token.replaceChildren(...problems.map((text) => createElement('span', { text })), link);
+}
+
 function render(dashboard, userState) {
   currentDashboard = dashboard;
   currentUserState = userState;
+  renderTokenNotice(dashboard);
   const problem = dashboard?.error ?? dashboard?.warning;
   elements.error.hidden = !problem;
   elements.error.textContent = problem ?? '';
@@ -367,6 +429,7 @@ function render(dashboard, userState) {
     dashboard?.pipelinesUnavailable ? ' · статусы CI недоступны' : '',
     dashboard?.mentionsUnavailable ? ' · упоминания недоступны' : '',
     dashboard?.assignedUnavailable ? ' · назначенные MR недоступны' : '',
+    dashboard?.defaultBranchesUnavailable ? ' · статусы default branch недоступны' : '',
   ].join('');
   elements.meta.textContent = dashboard?.fetchedAt
     ? `@${dashboard.username} · ${formatRelative(dashboard.fetchedAt)}${skipped}`

@@ -119,6 +119,19 @@ describe('collectNotificationEvents', () => {
     ]);
   });
 
+  it('reports a default branch that turned red', () => {
+    const branch = (key) => ({
+      key,
+      title: `group/${key}`,
+      webUrl: `${BASE_URL}/group/${key}/-/pipelines/1`,
+      updatedAt: 't',
+    });
+    const previous = dashboard({ brokenBranches: [branch('a')] });
+    const next = dashboard({ brokenBranches: [branch('a'), branch('b')] });
+    assert.deepEqual(changes(previous, next), ['branchBroken:b']);
+    assert.deepEqual(changes({ ...previous, defaultBranchesUnavailable: true }, next), []);
+  });
+
   it('stays silent about snoozed MRs, including when the snooze expires', () => {
     const userState = { snoozed: { 2: { until: '2026-03-10T16:00:00' }, 3: { until: '2026-03-10T14:00:00' } } };
     const previous = dashboard({ reviewing: [mrItem('3')] });

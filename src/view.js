@@ -1,6 +1,18 @@
 import { isSnoozeActive } from './snooze.js';
 
-export const SECTION_IDS = ['reviewing', 'assigned', 'mentioned', 'awaitingApproval', 'threads', 'authored'];
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TOKEN_EXPIRY_WARNING_DAYS = 7;
+export const REQUIRED_TOKEN_SCOPE = 'read_api';
+
+export const SECTION_IDS = [
+  'reviewing',
+  'assigned',
+  'mentioned',
+  'awaitingApproval',
+  'threads',
+  'authored',
+  'brokenBranches',
+];
 
 const isFailedPipeline = (item) => item.pipeline?.status === 'failed' && !item.pipeline.onlyIgnoredFailures;
 const awaitsMyReview = (item) => !item.approvedByMe && !item.draft;
@@ -71,6 +83,12 @@ const NOTIFICATION_RULES = [
     applies: (item) => item.status === 'mergeable' && !item.draft,
     isNew: (item, prev) => Boolean(prev) && prev.status !== 'mergeable',
   },
+  {
+    type: 'branchBroken',
+    section: 'brokenBranches',
+    sources: ['defaultBranchesUnavailable'],
+    isNew: (item, prev) => !prev,
+  },
 ];
 
 const isComplete = (dashboard) =>
@@ -104,4 +122,28 @@ export function collectNotificationEvents(previous, next, userState = {}, now = 
         .map((item) => ({ type, item }));
     },
   );
+}
+
+export function tokenProblems(token, now = Date.now()) {
+  if (!token) {
+    return [];
+  }
+  const problems = [];
+  if (!token.expiresAt) {
+    problems.push('Токен бессрочный — лучше пересоздать его со сроком действия');
+  } else {
+    const msLeft = Date.parse(token.expiresAt) - now;
+    if (msLeft <= 0) {
+      problems.push('Срок действия токена истёк');
+    } else if (msLeft < DAY_MS) {
+      problems.push('Токен истекает сегодня');
+    } else if (msLeft <= TOKEN_EXPIRY_WARNING_DAYS * DAY_MS) {
+      problems.push(`Токен истекает через ${Math.floor(msLeft / DAY_MS)} дн.`);
+    }
+  }
+  const extraScopes = token.scopes.filter((scope) => scope !== REQUIRED_TOKEN_SCOPE);
+  if (extraScopes.length) {
+    problems.push(`У токена лишние права: ${extraScopes.join(', ')} — достаточно ${REQUIRED_TOKEN_SCOPE}`);
+  }
+  return problems;
 }

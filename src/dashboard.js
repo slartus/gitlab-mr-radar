@@ -1,20 +1,26 @@
 import {
+  DEFAULT_BRANCH_PIPELINES_BATCH,
   GitLabError,
   MERGE_REQUEST_STATES_BATCH,
   fetchApprovals,
   fetchAuthoredPipelines,
+  fetchDefaultBranchPipelines,
   fetchDiscussions,
   fetchMaintainedProjects,
   fetchMergeRequestStates,
   fetchPipelineFailures,
+  fetchTokenInfo,
 } from './gitlab.js';
 
 const CONCURRENCY = 6;
 const SKIPPABLE_STATUSES = new Set([403, 404]);
 const FATAL_STATUSES = new Set([401, 429]);
 const MENTION_ACTIONS = new Set(['mentioned', 'directly_addressed']);
+const MENTION_TARGET_TYPES = ['MergeRequest', 'Issue'];
 
 export const mrKey = (mr) => `${mr.project_id}!${mr.iid}`;
+const issueKey = (issue) => `${issue.project_id}#${issue.iid}`;
+const todoKey = (todo) => (todo.target_type === 'Issue' ? issueKey(todo.target) : mrKey(todo.target));
 const mrReference = (mr) => mr.references?.full ?? `!${mr.iid}`;
 const isDraft = (mr) => Boolean(mr.draft ?? mr.work_in_progress);
 const projectPathOf = (mr) => {
@@ -153,6 +159,7 @@ async function fetchStates(client, mrs) {
 function toItem(mr, extra) {
   return {
     key: mrKey(mr),
+    kind: 'mr',
     projectId: mr.project_id,
     title: mr.title,
     webUrl: mr.web_url,
@@ -170,14 +177,16 @@ export function collectMentions(todos, excludedKeys) {
   const todosByMr = new Map();
   todos
     .filter((todo) => MENTION_ACTIONS.has(todo.action_name) && todo.target?.state === 'opened')
-    .filter((todo) => !excludedKeys.has(mrKey(todo.target)))
+    .filter((todo) => !excludedKeys.has(todoKey(todo)))
     .forEach((todo) => {
-      const key = mrKey(todo.target);
+      const key = todoKey(todo);
       todosByMr.set(key, [...(todosByMr.get(key) ?? []), todo]);
     });
   return [...todosByMr.values()].map((mrTodos) => {
     const latest = mrTodos.reduce((a, b) => (a.created_at > b.created_at ? a : b));
+    const isIssue = latest.target_type === 'Issue';
     return toItem(latest.target, {
+      ...(isIssue && { key: issueKey(latest.target), kind: 'issue', status: null }),
       mentionedBy: [...new Set(mrTodos.map((todo) => todo.author.username))],
       mentionCount: mrTodos.length,
       mentionUrl: latest.target_url,
@@ -200,32 +209,67 @@ function withFailures(pipeline, failures, ignoredChecks) {
 
 const pipelineOf = (raw, mr) => raw.authoredPipelines?.get(mrReference(mr)) ?? null;
 
+async function fetchMentionTodos(client) {
+  const lists = await Promise.all(
+    MENTION_TARGET_TYPES.map((type) => client.getAll('/todos', { state: 'pending', type })),
+  );
+  return lists.flat();
+}
+
+async function fetchBrokenDefaultBranches(client, projects) {
+  const candidates = projects.filter((project) => project.default_branch && project.path_with_namespace);
+  const batches = chunk(candidates, DEFAULT_BRANCH_PIPELINES_BATCH);
+  const results = await mapLimit(batches, CONCURRENCY, (batch) =>
+    optional(fetchDefaultBranchPipelines(client, batch)),
+  );
+  const broken = batches.flatMap((batch, index) =>
+    batch
+      .map((project, position) => ({ project, pipeline: results[index]?.[position] }))
+      .filter(({ pipeline }) => pipeline?.status === 'failed')
+      .map(({ project, pipeline }) => ({
+        key: `branch:${project.id}`,
+        kind: 'branch',
+        projectId: project.id,
+        title: project.path_with_namespace,
+        reference: project.default_branch,
+        webUrl: pipeline.webUrl,
+        updatedAt: pipeline.finishedAt ?? new Date(0).toISOString(),
+      })),
+  );
+  return { broken, unavailable: results.some((result) => result === null) };
+}
+
 export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
   const me = await client.get('/user');
 
-  const [maintainedProjects, authoredMrs, reviewingMrs, assignedMrs, authoredPipelines, todos] = await Promise.all([
-    optional(fetchMaintainedProjects(client)),
-    client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened' }),
-    client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
-    optional(client.getAll('/merge_requests', { scope: 'assigned_to_me', state: 'opened' })),
-    optional(fetchAuthoredPipelines(client)),
-    optional(client.getAll('/todos', { state: 'pending', type: 'MergeRequest' })),
-  ]);
+  const [maintainedProjects, authoredMrs, reviewingMrs, assignedMrs, authoredPipelines, todos, token] =
+    await Promise.all([
+      optional(fetchMaintainedProjects(client)),
+      client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened' }),
+      client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
+      optional(client.getAll('/merge_requests', { scope: 'assigned_to_me', state: 'opened' })),
+      optional(fetchAuthoredPipelines(client)),
+      optional(fetchMentionTodos(client)),
+      optional(fetchTokenInfo(client)),
+    ]);
   const watchedIds = selectedProjectIds && new Set(selectedProjectIds);
   const watchedProjects = (maintainedProjects ?? []).filter((project) => !watchedIds || watchedIds.has(project.id));
 
   const skippedErrors = [];
-  const maintainedMrLists = await mapLimit(watchedProjects, CONCURRENCY, (project) =>
-    orSkip(
-      () =>
-        client.getAll(`/projects/${project.id}/merge_requests`, {
-          state: 'opened',
-          wip: 'no',
-          'not[author_id]': me.id,
-        }),
-      skippedErrors,
+  const [maintainedMrLists, defaultBranches] = await Promise.all([
+    mapLimit(watchedProjects, CONCURRENCY, (project) =>
+      orSkip(
+        () =>
+          client.getAll(`/projects/${project.id}/merge_requests`, {
+            state: 'opened',
+            wip: 'no',
+            'not[author_id]': me.id,
+          }),
+        skippedErrors,
+      ),
     ),
-  );
+    fetchBrokenDefaultBranches(client, watchedProjects),
+  ]);
   assertNotAllFailed(maintainedMrLists, skippedErrors);
 
   return {
@@ -242,6 +286,9 @@ export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
     projectsUnavailable: maintainedProjects === null,
     authoredPipelines,
     todos,
+    token,
+    brokenBranches: defaultBranches.broken,
+    defaultBranchesUnavailable: defaultBranches.unavailable,
   };
 }
 
@@ -323,6 +370,7 @@ export function classify(raw, { details, pipelineFailures }, ignoredCheckNames =
     awaitingApproval: awaitingApproval.sort(byUpdatedDesc),
     threads: threads.sort(byUpdatedDesc),
     authored: authored.sort(byUpdatedDesc),
+    brokenBranches: [...raw.brokenBranches].sort(byUpdatedDesc),
   };
 }
 
@@ -342,6 +390,8 @@ export async function collectDashboard(
     pipelinesUnavailable: raw.authoredPipelines === null,
     mentionsUnavailable: raw.todos === null,
     assignedUnavailable: raw.assignedUnavailable,
+    defaultBranchesUnavailable: raw.defaultBranchesUnavailable,
+    token: raw.token,
     sections: classify(raw, enriched, ignoredCheckNames),
     threadCache: enriched.threadCache,
   };

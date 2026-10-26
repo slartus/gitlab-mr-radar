@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 
 import { compareVersions, normalizeBaseUrl, parseCheckNames } from '../src/config.js';
-import { GitLabClient, GitLabError, fetchMergeRequestStates, fetchPipelineFailures } from '../src/gitlab.js';
+import {
+  GitLabClient,
+  GitLabError,
+  fetchDefaultBranchPipelines,
+  fetchMergeRequestStates,
+  fetchPipelineFailures,
+  fetchTokenInfo,
+} from '../src/gitlab.js';
 import { FakeClient } from './helpers.js';
 
 const BASE_URL = 'https://gitlab.example.com';
@@ -145,5 +152,47 @@ describe('fetchMergeRequestStates', () => {
   it('returns no states for an inaccessible project', async () => {
     const client = new FakeClient({}, { graphql: () => ({ project: null }) });
     assert.equal((await fetchMergeRequestStates(client, 'group/project', [1])).size, 0);
+  });
+});
+
+describe('fetchDefaultBranchPipelines', () => {
+  it('takes the latest conclusive pipeline, passing paths and branches only as variables', async () => {
+    let request = null;
+    const client = new FakeClient({}, {
+      graphql: (query, variables) => {
+        request = { query, variables };
+        return {
+          p0: {
+            pipelines: {
+              nodes: [
+                { status: 'CANCELED', path: '/a/b/-/pipelines/4', finishedAt: 'u' },
+                { status: 'SKIPPED', path: '/a/b/-/pipelines/5', finishedAt: 'v' },
+                { status: 'FAILED', path: '/a/b/-/pipelines/3', finishedAt: 't' },
+              ],
+            },
+          },
+          p1: { pipelines: { nodes: [{ status: 'CANCELED', path: '/a/c/-/pipelines/6', finishedAt: 'w' }] } },
+        };
+      },
+    });
+
+    const result = await fetchDefaultBranchPipelines(client, [
+      { path_with_namespace: 'a/b', default_branch: 'main' },
+      { path_with_namespace: 'a/"c', default_branch: 'dev' },
+    ]);
+
+    assert.deepEqual(request.variables, { path0: 'a/b', ref0: 'main', path1: 'a/"c', ref1: 'dev' });
+    assert.ok(!request.query.includes('a/b') && !request.query.includes('main'));
+    assert.deepEqual(result, [
+      { status: 'failed', webUrl: 'https://gitlab.example.com/a/b/-/pipelines/3', finishedAt: 't' },
+      null,
+    ]);
+  });
+});
+
+describe('fetchTokenInfo', () => {
+  it('reads expiry and scopes of the current token', async () => {
+    const client = new FakeClient({ '/personal_access_tokens/self': { expires_at: null, scopes: ['read_api'] } });
+    assert.deepEqual(await fetchTokenInfo(client), { expiresAt: null, scopes: ['read_api'] });
   });
 });

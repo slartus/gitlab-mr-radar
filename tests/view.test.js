@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from '../src/links.js';
-import { SECTION_IDS, deriveView } from '../src/view.js';
+import { SECTION_IDS, deriveView, tokenProblems } from '../src/view.js';
 
 const BASE_URL = 'https://gitlab.example.com';
 
@@ -57,5 +57,25 @@ describe('links', () => {
     assert.equal(failureUrl({ kind: 'job', webUrl: 'https://evil.com/x' }, BASE_URL), BASE_URL);
     assert.equal(failureUrl({ kind: 'external', webUrl: 'https://jenkins.example.com/1' }, BASE_URL), 'https://jenkins.example.com/1');
     assert.equal(failureUrl({ kind: 'external', webUrl: 'http://jenkins.example.com/1' }, BASE_URL), null);
+  });
+});
+
+describe('tokenProblems', () => {
+  const NOW = Date.parse('2026-03-10T12:00:00Z');
+
+  it('warns about expiry within a week, missing expiry and extra scopes', () => {
+    assert.deepEqual(tokenProblems({ expiresAt: '2026-04-10', scopes: ['read_api'] }, NOW), []);
+    assert.deepEqual(tokenProblems({ expiresAt: '2026-03-14', scopes: ['read_api'] }, NOW), [
+      'Токен истекает через 3 дн.',
+    ]);
+    assert.deepEqual(tokenProblems({ expiresAt: '2026-03-11', scopes: ['read_api'] }, NOW), ['Токен истекает сегодня']);
+    assert.deepEqual(tokenProblems({ expiresAt: '2026-03-10', scopes: ['read_api'] }, NOW), [
+      'Срок действия токена истёк',
+    ]);
+    assert.deepEqual(tokenProblems({ expiresAt: null, scopes: ['read_api', 'api', 'write_repository'] }, NOW), [
+      'Токен бессрочный — лучше пересоздать его со сроком действия',
+      'У токена лишние права: api, write_repository — достаточно read_api',
+    ]);
+    assert.deepEqual(tokenProblems(null, NOW), []);
   });
 });

@@ -10,6 +10,7 @@ const EVENT_LABELS = {
   thread: { title: 'Ответ в треде', counted: (count) => `ждут ответа: ${count}` },
   ciFailed: { title: 'Упал CI', counted: (count) => `упал CI: ${count}` },
   mergeable: { title: 'Можно мёржить', counted: (count) => `можно мёржить: ${count}` },
+  branchBroken: { title: 'Сломан default branch', counted: (count) => `сломан default branch: ${count}` },
 };
 
 export const uniqueEventItems = (events) => [...new Map(events.map(({ item }) => [item.key, item])).values()];
@@ -32,7 +33,7 @@ export function formatNotification(events, { showDetails, iconUrl }) {
     iconUrl,
     title: 'GitLab MR Radar',
     message: summary,
-    priority: countsByType.has('ciFailed') || countsByType.has('mention') ? 1 : 0,
+    priority: ['ciFailed', 'mention', 'branchBroken'].some((type) => countsByType.has(type)) ? 1 : 0,
   };
   if (!showDetails) {
     return { ...base, type: 'basic' };

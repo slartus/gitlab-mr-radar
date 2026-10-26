@@ -327,3 +327,31 @@ li:hover .row-action,
 .snooze-menu button:hover {
   background: var(--hover);
 }
+
+.age.warn {
+  color: var(--warning);
+}
+
+.age.bad {
+  color: var(--danger);
+}
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--warning);
+  color: var(--warning);
+}
+
+.notice[hidden] {
+  display: none;
+}
+
+.notice a {
+  color: var(--accent);
+  font-weight: 600;
+}

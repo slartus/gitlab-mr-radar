@@ -36,6 +36,21 @@ const MERGE_REQUEST_STATES_QUERY = `
 `;
 
 export const MERGE_REQUEST_STATES_BATCH = 100;
+export const DEFAULT_BRANCH_PIPELINES_BATCH = 20;
+const DEFAULT_BRANCH_PIPELINES_DEPTH = 5;
+const CONCLUSIVE_PIPELINE_STATUSES = new Set(['success', 'failed']);
+
+function defaultBranchPipelinesQuery(count) {
+  const indexes = Array.from({ length: count }, (_, index) => index);
+  const variables = indexes.map((index) => `$path${index}: ID!, $ref${index}: String!`).join(', ');
+  const projects = indexes
+    .map(
+      (index) =>
+        `p${index}: project(fullPath: $path${index}) { pipelines(ref: $ref${index}, scope: FINISHED, first: ${DEFAULT_BRANCH_PIPELINES_DEPTH}) { nodes { status path finishedAt } } }`,
+    )
+    .join('\n');
+  return `query DefaultBranchPipelines(${variables}) {\n${projects}\n}`;
+}
 
 export class GitLabError extends Error {
   constructor(status, message, path) {
@@ -226,6 +241,33 @@ export async function fetchMergeRequestStates(client, fullPath, iids) {
       },
     ]),
   );
+}
+
+export async function fetchDefaultBranchPipelines(client, projects) {
+  const variables = Object.fromEntries(
+    projects.flatMap((project, index) => [
+      [`path${index}`, project.path_with_namespace],
+      [`ref${index}`, project.default_branch],
+    ]),
+  );
+  const data = await client.graphql(defaultBranchPipelinesQuery(projects.length), variables);
+  return projects.map((_, index) => {
+    const pipeline = data[`p${index}`]?.pipelines?.nodes?.find((node) =>
+      CONCLUSIVE_PIPELINE_STATUSES.has(node.status.toLowerCase()),
+    );
+    return pipeline
+      ? {
+          status: pipeline.status.toLowerCase(),
+          webUrl: new URL(pipeline.path, client.baseUrl).href,
+          finishedAt: pipeline.finishedAt,
+        }
+      : null;
+  });
+}
+
+export async function fetchTokenInfo(client) {
+  const token = await client.get('/personal_access_tokens/self');
+  return { expiresAt: token.expires_at ?? null, scopes: token.scopes ?? [] };
 }
 
 export const fetchApprovals = (client, mr) =>

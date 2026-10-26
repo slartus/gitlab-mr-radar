@@ -495,3 +495,118 @@ describe('collectDashboard with GraphQL merge request states', () => {
     assert.deepEqual(dashboard.sections.assigned, []);
   });
 });
+
+describe('collectDashboard extras', () => {
+  it('collects mentions in issues next to merge requests', async () => {
+    const issue = {
+      project_id: 10,
+      iid: 5,
+      title: 'Crash report',
+      web_url: 'https://gitlab.example.com/group/project/-/issues/5',
+      references: { full: 'group/project#5' },
+      author: ALICE,
+      updated_at: '2026-01-01T00:00:00Z',
+      state: 'opened',
+    };
+    const mergeRequest = mr({ iid: 5, state: 'opened' });
+    const todo = (target, targetType) => ({
+      action_name: 'mentioned',
+      target_type: targetType,
+      target,
+      author: BOB,
+      created_at: '2026-01-02T00:00:00Z',
+      target_url: `${target.web_url}#note_1`,
+    });
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/todos': (params) =>
+        params.type === 'Issue' ? [todo(issue, 'Issue')] : [todo(mergeRequest, 'MergeRequest')],
+    });
+
+    const { sections } = await collectDashboard(client);
+
+    assert.deepEqual(
+      sections.mentioned.map(({ key, kind, reference }) => [key, kind, reference]).sort(),
+      [
+        ['10!5', 'mr', 'group/project!5'],
+        ['10#5', 'issue', 'group/project#5'],
+      ],
+    );
+    assert.equal(sections.mentioned.find((item) => item.kind === 'issue').status, null);
+  });
+
+  it('reports token expiry and scopes when GitLab exposes them', async () => {
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/personal_access_tokens/self': { expires_at: '2026-02-01', scopes: ['read_api', 'api'] },
+    });
+    assert.deepEqual((await collectDashboard(client)).token, { expiresAt: '2026-02-01', scopes: ['read_api', 'api'] });
+    assert.equal((await collectDashboard(new FakeClient(emptyDashboardRoutes()))).token, null);
+  });
+
+  it('lists maintained projects whose default branch pipeline failed', async () => {
+    const project = (id, path, branch = 'main') => ({ id, path_with_namespace: path, default_branch: branch });
+    const statuses = { 'group/red': 'FAILED', 'group/green': 'SUCCESS' };
+    const client = new FakeClient(
+      {
+        ...emptyDashboardRoutes(),
+        '/projects': [project(10, 'group/red'), project(11, 'group/green'), project(12, 'group/empty', null)],
+        '/projects/10/merge_requests': [],
+        '/projects/11/merge_requests': [],
+        '/projects/12/merge_requests': [],
+      },
+      {
+        graphql: (query, variables) => {
+          if (!query.includes('DefaultBranchPipelines')) {
+            throw new GitLabError(404, 'unexpected', '/graphql');
+          }
+          return Object.fromEntries(
+            Object.keys(variables)
+              .filter((name) => name.startsWith('path'))
+              .map((name) => [
+                `p${name.slice(4)}`,
+                {
+                  pipelines: {
+                    nodes: [
+                      {
+                        status: statuses[variables[name]],
+                        path: `/${variables[name]}/-/pipelines/1`,
+                        finishedAt: '2026-01-05T00:00:00Z',
+                      },
+                    ],
+                  },
+                },
+              ]),
+          );
+        },
+      },
+    );
+
+    const dashboard = await collectDashboard(client);
+
+    assert.deepEqual(dashboard.sections.brokenBranches, [
+      {
+        key: 'branch:10',
+        kind: 'branch',
+        projectId: 10,
+        title: 'group/red',
+        reference: 'main',
+        webUrl: 'https://gitlab.example.com/group/red/-/pipelines/1',
+        updatedAt: '2026-01-05T00:00:00Z',
+      },
+    ]);
+    assert.equal(dashboard.defaultBranchesUnavailable, false);
+    assert.equal(deriveView(dashboard).counts.failedCi, 0);
+  });
+
+  it('marks default branch statuses unavailable when GraphQL fails', async () => {
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/projects': [{ id: 10, path_with_namespace: 'group/red', default_branch: 'main' }],
+      '/projects/10/merge_requests': [],
+    });
+    const dashboard = await collectDashboard(client);
+    assert.equal(dashboard.defaultBranchesUnavailable, true);
+    assert.deepEqual(dashboard.sections.brokenBranches, []);
+  });
+});
