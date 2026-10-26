@@ -271,3 +271,59 @@ li a:hover {
 .update .muted {
   margin-left: 0;
 }
+
+.row {
+  display: flex;
+  align-items: flex-start;
+}
+
+.row > a {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-action {
+  flex-shrink: 0;
+  margin: 6px 8px 0 0;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+li:hover .row-action,
+.row-action:focus-visible,
+.row-action[aria-expanded="true"],
+.row-action.visible {
+  opacity: 1;
+}
+
+.row-action:hover {
+  background: var(--hover);
+}
+
+.snooze-menu {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 6px;
+}
+
+.snooze-menu button {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.snooze-menu button:hover {
+  background: var(--hover);
+}

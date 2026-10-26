@@ -62,6 +62,8 @@ describe('collectMentions', () => {
     assert.deepEqual(items[0].mentionedBy, ['alice', 'bob']);
     assert.equal(items[0].mentionCount, 2);
     assert.equal(items[0].mentionUrl, `${target.web_url}#note_2026-01-02T00:00:00Z`);
+    assert.equal(items[0].mentionedAt, '2026-01-02T00:00:00Z');
+    assert.equal(items[0].updatedAt, target.updated_at);
   });
 
   it('skips closed MRs, other actions and excluded keys', () => {

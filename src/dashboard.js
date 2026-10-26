@@ -17,6 +17,7 @@ const mrReference = (mr) => mr.references?.full ?? `!${mr.iid}`;
 const isDraft = (mr) => Boolean(mr.draft ?? mr.work_in_progress);
 const uniqueBy = (items, key) => [...new Map(items.map((item) => [key(item), item])).values()];
 const byUpdatedDesc = (a, b) => b.updatedAt.localeCompare(a.updatedAt);
+const byMentionedDesc = (a, b) => b.mentionedAt.localeCompare(a.mentionedAt);
 
 export const normalizeCheckName = (name) => name.trim().toLowerCase();
 
@@ -122,7 +123,7 @@ export function collectMentions(todos, excludedKeys) {
       mentionedBy: [...new Set(mrTodos.map((todo) => todo.author.username))],
       mentionCount: mrTodos.length,
       mentionUrl: latest.target_url,
-      updatedAt: latest.created_at,
+      mentionedAt: latest.created_at,
     });
   });
 }
@@ -242,7 +243,7 @@ export function classify(raw, { details, pipelineFailures }, ignoredCheckNames =
 
   return {
     reviewing: reviewing.sort(byUpdatedDesc),
-    mentioned: mentioned.sort(byUpdatedDesc),
+    mentioned: mentioned.sort(byMentionedDesc),
     awaitingApproval: awaitingApproval.sort(byUpdatedDesc),
     threads: threads.sort(byUpdatedDesc),
     authored: authored.sort(byUpdatedDesc),

@@ -9,18 +9,25 @@ import {
   UPDATE_REPOSITORY,
   compareVersions,
   hasHostPermission,
+  hasNotificationsPermission,
+  notificationTargetKey,
 } from './config.js';
 import { collectDashboard } from './dashboard.js';
 import { GitLabClient } from './gitlab.js';
-import { deriveView } from './view.js';
+import { isUnderBaseUrl } from './links.js';
+import { formatNotification, notificationTarget } from './notifications.js';
+import { nextSnoozeExpiry } from './snooze.js';
+import { collectNotificationEvents, deriveView } from './view.js';
 
 const ALARM_NAME = 'refresh';
 const UPDATE_ALARM_NAME = 'update-check';
+const SNOOZE_ALARM_NAME = 'snooze-expiry';
 const BADGE_COLOR_OK = '#1f75cb';
 const BADGE_COLOR_ERROR = '#dd2b0e';
 const BADGE_TITLE = 'GitLab MR Radar';
 
 let inFlightRefresh = null;
+let notificationListenerRegistered = false;
 
 async function loadSettings() {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.settings);
@@ -32,8 +39,14 @@ async function loadSettings() {
     selectedProjectIds: [],
     ignoredCheckNames: [],
     checkUpdates: false,
+    notifications: false,
+    notificationDetails: false,
     ...stored[STORAGE_KEYS.settings],
   };
+}
+
+async function loadUserState() {
+  return (await chrome.storage.local.get(STORAGE_KEYS.userState))[STORAGE_KEYS.userState] ?? {};
 }
 
 async function setBadge(text, color, title = BADGE_TITLE) {
@@ -69,8 +82,93 @@ function describeError(error) {
   return error.message;
 }
 
+async function notifyChanges(previous, dashboard, userState, settings) {
+  if (!settings.notifications || !(await hasNotificationsPermission())) {
+    return;
+  }
+  const events = collectNotificationEvents(previous, dashboard, userState);
+  if (events.length === 0) {
+    return;
+  }
+  const notificationId = `changes-${Date.now()}`;
+  await chrome.storage.session.set({
+    [notificationTargetKey(notificationId)]: {
+      baseUrl: dashboard.baseUrl,
+      url: notificationTarget(events, dashboard.baseUrl),
+    },
+  });
+  await chrome.notifications.create(
+    notificationId,
+    formatNotification(events, {
+      showDetails: settings.notificationDetails,
+      iconUrl: chrome.runtime.getURL('icons/128.png'),
+    }),
+  );
+}
+
+async function takeNotificationTarget(notificationId) {
+  const key = notificationTargetKey(notificationId);
+  const { [key]: target } = await chrome.storage.session.get(key);
+  await chrome.storage.session.remove(key);
+  return target;
+}
+
+async function openNotificationTarget(notificationId) {
+  const target = await takeNotificationTarget(notificationId);
+  await chrome.notifications.clear(notificationId);
+  const { baseUrl } = await loadSettings();
+  if (!target || target.baseUrl !== baseUrl) {
+    return;
+  }
+  if (isUnderBaseUrl(target.url, baseUrl)) {
+    await chrome.tabs.create({ url: target.url });
+    return;
+  }
+  try {
+    await chrome.action.openPopup();
+  } catch {
+    await chrome.tabs.create({ url: baseUrl });
+  }
+}
+
+function registerNotificationListeners() {
+  if (notificationListenerRegistered || !chrome.notifications) {
+    return;
+  }
+  notificationListenerRegistered = true;
+  chrome.notifications.onClicked.addListener((notificationId) => {
+    openNotificationTarget(notificationId).catch(console.error);
+  });
+  chrome.notifications.onClosed.addListener((notificationId, byUser) => {
+    if (byUser) {
+      takeNotificationTarget(notificationId).catch(console.error);
+    }
+  });
+}
+
+async function scheduleSnoozeExpiry(userState) {
+  const when = nextSnoozeExpiry(userState.snoozed);
+  if (when) {
+    await chrome.alarms.create(SNOOZE_ALARM_NAME, { when });
+  } else {
+    await chrome.alarms.clear(SNOOZE_ALARM_NAME);
+  }
+}
+
+async function showCountsFromStorage() {
+  const stored = await chrome.storage.local.get([STORAGE_KEYS.dashboard, STORAGE_KEYS.userState]);
+  const dashboard = stored[STORAGE_KEYS.dashboard];
+  const userState = stored[STORAGE_KEYS.userState] ?? {};
+  await scheduleSnoozeExpiry(userState);
+  if (!dashboard?.sections || dashboard.error) {
+    return;
+  }
+  await showCounts(deriveView(dashboard, userState).counts);
+}
+
 async function performRefresh() {
-  const { baseUrl, token, projectFilterMode, selectedProjectIds, ignoredCheckNames } = await loadSettings();
+  const settings = await loadSettings();
+  const { baseUrl, token, projectFilterMode, selectedProjectIds, ignoredCheckNames } = settings;
   const setupError = !token
     ? 'Укажите токен в настройках'
     : !(await hasHostPermission(baseUrl))
@@ -89,11 +187,18 @@ async function performRefresh() {
       ignoredCheckNames,
     });
     dashboard.baseUrl = baseUrl;
+    dashboard.filters = {
+      selectedProjectIds: isSelectedMode ? [...selectedProjectIds].sort((a, b) => a - b) : null,
+      ignoredCheckNames: [...ignoredCheckNames].sort(),
+    };
     if (isSelectedMode && dashboard.watchedProjects === 0 && !dashboard.projectsUnavailable) {
       dashboard.warning = 'Ни один выбранный проект больше не доступен — обновите выбор в настройках';
     }
     await chrome.storage.local.set({ [STORAGE_KEYS.dashboard]: dashboard });
-    await showCounts(deriveView(dashboard).counts);
+    const userState = await loadUserState();
+    await scheduleSnoozeExpiry(userState);
+    await showCounts(deriveView(dashboard, userState).counts);
+    await notifyChanges(previous, dashboard, userState, settings).catch(console.error);
   } catch (error) {
     await chrome.storage.local.set({
       [STORAGE_KEYS.dashboard]: { ...previous, error: describeError(error), failedAt: new Date().toISOString() },
@@ -177,10 +282,18 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     refresh();
   } else if (alarm.name === UPDATE_ALARM_NAME) {
     checkForUpdate();
+  } else if (alarm.name === SNOOZE_ALARM_NAME) {
+    showCountsFromStorage().catch(console.error);
   }
 });
 
+registerNotificationListeners();
+chrome.permissions.onAdded.addListener(registerNotificationListeners);
+
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[STORAGE_KEYS.userState]) {
+    showCountsFromStorage().catch(console.error);
+  }
   if (area === 'local' && changes[STORAGE_KEYS.settings]) {
     scheduleRefresh({ immediately: false });
     const { oldValue, newValue } = changes[STORAGE_KEYS.settings];

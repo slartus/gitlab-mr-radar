@@ -7,6 +7,9 @@
     "storage",
     "alarms"
   ],
+  "optional_permissions": [
+    "notifications"
+  ],
   "optional_host_permissions": [
     "https://*/*"
   ],

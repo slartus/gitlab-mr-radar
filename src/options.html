@@ -60,6 +60,18 @@
       Проверять новые версии на GitHub (раз в сутки, нужен доступ к api.github.com)
     </label>
     <fieldset>
+      <legend>Уведомления</legend>
+      <label class="checkbox">
+        <input id="notifications" type="checkbox">
+        Уведомлять о новых MR на ревью, упоминаниях, тредах, упавшем CI и MR, которые можно мёржить
+      </label>
+      <label class="checkbox">
+        <input id="notification-details" type="checkbox">
+        Показывать названия MR в уведомлениях
+      </label>
+      <div class="hint">Уведомления видны на заблокированном экране и при демонстрации экрана — без этой галки показываются только счётчики. Об отложенных MR уведомлений нет.</div>
+    </fieldset>
+    <fieldset>
       <legend>Проекты для «Ждут моего апрува»</legend>
       <div class="hint">MR, где вы ревьюер или автор, показываются из всех проектов.</div>
       <div class="modes">

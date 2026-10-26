@@ -1,7 +1,8 @@
 import { DEFAULT_BASE_URL, STORAGE_KEYS, UPDATE_REPOSITORY, compareVersions } from './config.js';
 import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from './links.js';
-import { deriveView } from './view.js';
+import { SNOOZE_OPTIONS, createSnooze, pruneSnoozed } from './snooze.js';
+import { deriveView, itemsByKey } from './view.js';
 
 const SECTIONS = [
   { id: 'reviewing', title: 'Меня назначили ревьюером', empty: 'Нет MR на ревью' },
@@ -59,8 +60,13 @@ const FAILURE_REASONS = {
   downstream_pipeline_creation_failed: 'не создан дочерний пайплайн',
 };
 
+const SNOOZED_SECTION = { id: 'snoozed', title: 'Отложено', empty: '' };
+
 const pipelineFailures = new Map();
 const expandedPipelines = new Set();
+let currentDashboard = null;
+let currentUserState = {};
+let pendingUserStateWrite = Promise.resolve();
 
 const elements = {
   meta: document.getElementById('meta'),
@@ -217,6 +223,7 @@ function renderItem(item, sectionId, baseUrl) {
   const webUrl = isUnderBaseUrl(targetUrl, baseUrl) ? targetUrl : baseUrl;
   const tags = [];
   if (item.draft) tags.push(tag('draft'));
+  if (sectionId === SNOOZED_SECTION.id) tags.push(tag(formatSnooze(item.snooze)));
   if (sectionId === 'mentioned' && item.mentionCount > 1) tags.push(tag(`упоминаний: ${item.mentionCount}`, 'warn'));
   if (sectionId === 'reviewing' && item.approvedByMe) tags.push(tag('я апрувнул', 'ok'));
   if (item.threadsAwaitingReply > 0) tags.push(tag(`ждут ответа: ${item.threadsAwaitingReply}`, 'warn'));
@@ -235,7 +242,7 @@ function renderItem(item, sectionId, baseUrl) {
   const subline = createElement('span', { className: 'sub' }, [
     createElement('span', { text: item.reference }),
     ...(sectionId === 'authored' ? [] : [createElement('span', { text: authorLabel(item, sectionId) })]),
-    createElement('span', { text: formatRelative(item.updatedAt) }),
+    createElement('span', { text: formatRelative(sectionId === 'mentioned' ? (item.mentionedAt ?? item.updatedAt) : item.updatedAt) }),
     ...tags,
   ]);
   const link = createElement('a', { attrs: { href: webUrl, title: item.title } }, [
@@ -247,10 +254,90 @@ function renderItem(item, sectionId, baseUrl) {
     openUrl(webUrl);
   });
   const ciBlock = showsPipeline && item.pipeline.status === 'failed' ? [renderCiBlock(item, baseUrl)] : [];
-  return createElement('li', {}, [link, ...ciBlock]);
+  const row = createElement('div', { className: 'row' }, [link, renderRowAction(item, sectionId)]);
+  return createElement('li', {}, [row, ...ciBlock]);
 }
 
-function renderSection(section, items, baseUrl) {
+function formatSnooze(snooze) {
+  if (!snooze?.until) {
+    return 'до изменений';
+  }
+  const until = new Date(snooze.until);
+  const sameDay = until.toDateString() === new Date().toDateString();
+  const time = until.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return sameDay ? `до ${time}` : `до ${until.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} ${time}`;
+}
+
+const isCompleteDashboard = (dashboard) =>
+  Boolean(dashboard?.sections) &&
+  !dashboard.error &&
+  !dashboard.skippedMrs &&
+  !dashboard.skippedProjects &&
+  !dashboard.projectsUnavailable &&
+  !dashboard.mentionsUnavailable;
+
+async function writeSnoozed(change) {
+  const stored = await chrome.storage.local.get(STORAGE_KEYS.userState);
+  const userState = stored[STORAGE_KEYS.userState] ?? {};
+  const current = isCompleteDashboard(currentDashboard)
+    ? pruneSnoozed(userState.snoozed, itemsByKey(currentDashboard))
+    : (userState.snoozed ?? {});
+  await chrome.storage.local.set({ [STORAGE_KEYS.userState]: { ...userState, snoozed: change(current) } });
+}
+
+function updateSnoozed(change) {
+  pendingUserStateWrite = pendingUserStateWrite.then(() => writeSnoozed(change)).catch(console.error);
+  return pendingUserStateWrite;
+}
+
+const snoozeItem = (item, option) =>
+  updateSnoozed((snoozed) => ({ ...snoozed, [item.key]: createSnooze(option, item) }));
+
+const unsnoozeItem = (item) =>
+  updateSnoozed(({ [item.key]: _removed, ...snoozed }) => snoozed);
+
+function renderSnoozeMenu(item) {
+  return createElement(
+    'div',
+    { className: 'snooze-menu', attrs: { role: 'group', 'aria-label': 'Отложить MR' } },
+    Object.entries(SNOOZE_OPTIONS).map(([option, { label }]) => {
+      const button = createElement('button', { text: label, attrs: { type: 'button' } });
+      button.addEventListener('click', () => snoozeItem(item, option));
+      return button;
+    }),
+  );
+}
+
+function renderRowAction(item, sectionId) {
+  if (sectionId === SNOOZED_SECTION.id) {
+    const button = createElement('button', {
+      className: 'row-action visible',
+      text: '↩',
+      attrs: { type: 'button', title: 'Вернуть', 'aria-label': `Вернуть: ${item.title}` },
+    });
+    button.addEventListener('click', () => unsnoozeItem(item));
+    return button;
+  }
+  const button = createElement('button', {
+    className: 'row-action',
+    text: '⏰',
+    attrs: { type: 'button', title: 'Отложить', 'aria-label': `Отложить: ${item.title}`, 'aria-expanded': 'false' },
+  });
+  button.addEventListener('click', () => {
+    const li = button.closest('li');
+    const existing = li.querySelector('.snooze-menu');
+    if (existing) {
+      existing.remove();
+      button.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    li.querySelector('.row').after(renderSnoozeMenu(item));
+    button.setAttribute('aria-expanded', 'true');
+  });
+  return button;
+}
+
+function renderSection(section, items, baseUrl, { collapsed = false } = {}) {
   const summary = createElement('summary', { text: section.title }, [
     createElement('span', { className: 'count', text: String(items.length) }),
   ]);
@@ -258,11 +345,13 @@ function renderSection(section, items, baseUrl) {
     ? createElement('ul', {}, items.map((item) => renderItem(item, section.id, baseUrl)))
     : createElement('div', { className: 'empty', text: section.empty });
   const details = createElement('details', {}, [summary, body]);
-  details.open = items.length > 0;
+  details.open = items.length > 0 && !collapsed;
   return details;
 }
 
-function render(dashboard) {
+function render(dashboard, userState) {
+  currentDashboard = dashboard;
+  currentUserState = userState;
   const problem = dashboard?.error ?? dashboard?.warning;
   elements.error.hidden = !problem;
   elements.error.textContent = problem ?? '';
@@ -279,9 +368,16 @@ function render(dashboard) {
   elements.meta.textContent = dashboard?.fetchedAt
     ? `@${dashboard.username} · ${formatRelative(dashboard.fetchedAt)}${skipped}`
     : '';
-  const sections = dashboard?.sections && dashboard.baseUrl ? deriveView(dashboard).sections : null;
+  if (!dashboard?.sections || !dashboard.baseUrl) {
+    elements.sections.replaceChildren();
+    return;
+  }
+  const view = deriveView(dashboard, userState);
   elements.sections.replaceChildren(
-    ...(sections ? SECTIONS.map((section) => renderSection(section, sections[section.id], dashboard.baseUrl)) : []),
+    ...SECTIONS.map((section) => renderSection(section, view.sections[section.id], dashboard.baseUrl)),
+    ...(view.snoozed.length
+      ? [renderSection(SNOOZED_SECTION, view.snoozed, dashboard.baseUrl, { collapsed: true })]
+      : []),
   );
 }
 
@@ -307,8 +403,12 @@ function renderUpdate(update) {
 }
 
 async function loadAndRender() {
-  const stored = await chrome.storage.local.get([STORAGE_KEYS.dashboard, STORAGE_KEYS.update]);
-  render(stored[STORAGE_KEYS.dashboard]);
+  const stored = await chrome.storage.local.get([
+    STORAGE_KEYS.dashboard,
+    STORAGE_KEYS.update,
+    STORAGE_KEYS.userState,
+  ]);
+  render(stored[STORAGE_KEYS.dashboard], stored[STORAGE_KEYS.userState] ?? {});
   renderUpdate(stored[STORAGE_KEYS.update]);
 }
 
@@ -327,8 +427,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') {
     return;
   }
-  if (changes[STORAGE_KEYS.dashboard]) {
-    render(changes[STORAGE_KEYS.dashboard].newValue);
+  if (changes[STORAGE_KEYS.dashboard] || changes[STORAGE_KEYS.userState]) {
+    render(
+      changes[STORAGE_KEYS.dashboard] ? changes[STORAGE_KEYS.dashboard].newValue : currentDashboard,
+      changes[STORAGE_KEYS.userState] ? (changes[STORAGE_KEYS.userState].newValue ?? {}) : currentUserState,
+    );
   }
   if (changes[STORAGE_KEYS.update]) {
     renderUpdate(changes[STORAGE_KEYS.update].newValue);

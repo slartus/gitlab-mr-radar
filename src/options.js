@@ -3,10 +3,12 @@ import {
   DEFAULT_INTERVAL_MINUTES,
   MAX_INTERVAL_MINUTES,
   MIN_INTERVAL_MINUTES,
+  NOTIFICATIONS_PERMISSION,
   PROJECT_FILTER_MODES,
   STORAGE_KEYS,
   UPDATE_CHECK_ORIGIN,
   hasHostPermission,
+  hasNotificationsPermission,
   hostPermissionPattern,
   normalizeBaseUrl,
   parseCheckNames,
@@ -20,6 +22,8 @@ const tokenInput = document.getElementById('token');
 const intervalInput = document.getElementById('interval');
 const ignoredChecksInput = document.getElementById('ignored-checks');
 const checkUpdatesInput = document.getElementById('check-updates');
+const notificationsInput = document.getElementById('notifications');
+const notificationDetailsInput = document.getElementById('notification-details');
 const status = document.getElementById('status');
 const tokenLink = document.getElementById('token-link');
 const modeInputs = [...document.querySelectorAll('input[name="project-mode"]')];
@@ -39,6 +43,8 @@ intervalInput.value = String(stored.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES)
 ignoredChecksInput.value = (stored.ignoredCheckNames ?? []).join('\n');
 checkUpdatesInput.checked =
   Boolean(stored.checkUpdates) && (await chrome.permissions.contains({ origins: [UPDATE_CHECK_ORIGIN] }));
+notificationsInput.checked = Boolean(stored.notifications) && (await hasNotificationsPermission());
+notificationDetailsInput.checked = Boolean(stored.notificationDetails);
 
 const selectedProjectIds = new Set(stored.selectedProjectIds ?? []);
 let selectionBaseUrl = savedBaseUrl;
@@ -303,6 +309,17 @@ checkUpdatesInput.addEventListener('change', async () => {
     status.textContent = 'Без доступа к api.github.com проверка обновлений не работает';
   }
 });
+notificationsInput.addEventListener('change', async () => {
+  if (!notificationsInput.checked) {
+    await chrome.permissions.remove({ permissions: [NOTIFICATIONS_PERMISSION] }).catch(() => false);
+    return;
+  }
+  const granted = await chrome.permissions.request({ permissions: [NOTIFICATIONS_PERMISSION] });
+  if (!granted) {
+    notificationsInput.checked = false;
+    status.textContent = 'Без разрешения браузера уведомления не работают';
+  }
+});
 updateTokenLink();
 syncPickerVisibility();
 
@@ -334,7 +351,7 @@ form.addEventListener('submit', async (event) => {
     await revokeHostPermission(savedBaseUrl);
   }
   if (savedBaseUrl !== baseUrl) {
-    await chrome.storage.local.remove(STORAGE_KEYS.dashboard);
+    await chrome.storage.local.remove([STORAGE_KEYS.dashboard, STORAGE_KEYS.userState]);
   }
   await chrome.storage.local.set({
     [STORAGE_KEYS.settings]: {
@@ -348,6 +365,8 @@ form.addEventListener('submit', async (event) => {
       selectedProjectIds: [...selectedProjectIds],
       ignoredCheckNames: parseCheckNames(ignoredChecksInput.value),
       checkUpdates: checkUpdatesInput.checked,
+      notifications: notificationsInput.checked,
+      notificationDetails: notificationDetailsInput.checked,
     },
   });
   savedBaseUrl = baseUrl;
