@@ -6,6 +6,7 @@ import { deriveView, itemsByKey } from './view.js';
 
 const SECTIONS = [
   { id: 'reviewing', title: 'Меня назначили ревьюером', empty: 'Нет MR на ревью' },
+  { id: 'assigned', title: 'Назначены на меня', empty: 'Нет назначенных MR' },
   { id: 'mentioned', title: 'Меня упомянули', empty: 'Нет новых упоминаний' },
   { id: 'awaitingApproval', title: 'Ждут моего апрува', empty: 'Всё заапрувлено' },
   { id: 'threads', title: 'Ждут моего ответа в тредах', empty: 'Нет неотвеченных тредов' },
@@ -225,7 +226,7 @@ function renderItem(item, sectionId, baseUrl) {
   if (item.draft) tags.push(tag('draft'));
   if (sectionId === SNOOZED_SECTION.id) tags.push(tag(formatSnooze(item.snooze)));
   if (sectionId === 'mentioned' && item.mentionCount > 1) tags.push(tag(`упоминаний: ${item.mentionCount}`, 'warn'));
-  if (sectionId === 'reviewing' && item.approvedByMe) tags.push(tag('я апрувнул', 'ok'));
+  if (['reviewing', 'assigned'].includes(sectionId) && item.approvedByMe) tags.push(tag('я апрувнул', 'ok'));
   if (item.threadsAwaitingReply > 0) tags.push(tag(`ждут ответа: ${item.threadsAwaitingReply}`, 'warn'));
   const showsPipeline = sectionId === 'authored' && Boolean(item.pipeline);
   if (sectionId === 'authored') {
@@ -274,7 +275,8 @@ const isCompleteDashboard = (dashboard) =>
   !dashboard.skippedMrs &&
   !dashboard.skippedProjects &&
   !dashboard.projectsUnavailable &&
-  !dashboard.mentionsUnavailable;
+  !dashboard.mentionsUnavailable &&
+  !dashboard.assignedUnavailable;
 
 async function writeSnoozed(change) {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.userState);
@@ -364,6 +366,7 @@ function render(dashboard, userState) {
     dashboard?.projectsUnavailable ? ' · проекты для апрува недоступны' : '',
     dashboard?.pipelinesUnavailable ? ' · статусы CI недоступны' : '',
     dashboard?.mentionsUnavailable ? ' · упоминания недоступны' : '',
+    dashboard?.assignedUnavailable ? ' · назначенные MR недоступны' : '',
   ].join('');
   elements.meta.textContent = dashboard?.fetchedAt
     ? `@${dashboard.username} · ${formatRelative(dashboard.fetchedAt)}${skipped}`

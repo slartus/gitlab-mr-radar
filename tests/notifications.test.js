@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { formatNotification, notificationTarget } from '../src/notifications.js';
-import { collectNotificationEvents } from '../src/view.js';
+import { SECTION_IDS, collectNotificationEvents } from '../src/view.js';
 
 const BASE_URL = 'https://gitlab.example.com';
 const NOW = Date.parse('2026-03-10T15:00:00');
@@ -17,7 +17,13 @@ const mrItem = (key, extra = {}) => ({
   ...extra,
 });
 
-const dashboard = (sections, extra = {}) => ({ baseUrl: BASE_URL, username: 'me', filters: null, sections, ...extra });
+const dashboard = (sections, extra = {}) => ({
+  baseUrl: BASE_URL,
+  username: 'me',
+  filters: null,
+  sections: { ...Object.fromEntries(SECTION_IDS.map((id) => [id, []])), ...sections },
+  ...extra,
+});
 const eventsOf = (events) => events.map(({ type, item }) => `${type}:${item.key}`);
 const changes = (previous, next, userState = {}) => eventsOf(collectNotificationEvents(previous, next, userState, NOW));
 
@@ -36,6 +42,28 @@ describe('collectNotificationEvents', () => {
       'approval:5',
       'thread:6',
     ]);
+  });
+
+  it('reports MRs newly assigned to me', () => {
+    const previous = dashboard({ assigned: [mrItem('1')] });
+    const next = dashboard({ assigned: [mrItem('1'), mrItem('2'), mrItem('3', { approvedByMe: true })] });
+    assert.deepEqual(changes(previous, next), ['assigned:2']);
+    assert.deepEqual(changes({ ...previous, assignedUnavailable: true }, next), []);
+  });
+
+  it('stays silent when an MR moves out of my assigned MRs because they could not be loaded', () => {
+    const previous = dashboard({ assigned: [mrItem('1')] });
+    const next = dashboard(
+      { awaitingApproval: [mrItem('1')], mentioned: [mrItem('1', { mentionCount: 1 })] },
+      { assignedUnavailable: true },
+    );
+    assert.deepEqual(changes(previous, next), []);
+  });
+
+  it('skips sections the previous dashboard did not have', () => {
+    const previous = { baseUrl: BASE_URL, username: 'me', filters: null, sections: { reviewing: [] } };
+    const next = dashboard({ assigned: [mrItem('1')], reviewing: [mrItem('2')] });
+    assert.deepEqual(changes(previous, next), ['review:2']);
   });
 
   it('reports a review again when my approval was reset', () => {

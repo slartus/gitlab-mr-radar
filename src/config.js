@@ -13,6 +13,7 @@ export const STORAGE_KEYS = {
   dashboard: 'dashboard',
   update: 'update',
   userState: 'userState',
+  threadCache: 'threadCache',
 };
 
 export const notificationTargetKey = (notificationId) => `notificationTarget:${notificationId}`;

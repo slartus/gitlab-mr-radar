@@ -4,6 +4,7 @@ const MAX_LISTED_ITEMS = 5;
 
 const EVENT_LABELS = {
   review: { title: 'Ревью', counted: (count) => `на ревью: ${count}` },
+  assigned: { title: 'Назначен на меня', counted: (count) => `назначено: ${count}` },
   mention: { title: 'Упоминание', counted: (count) => `упоминаний: ${count}` },
   approval: { title: 'Ждёт апрува', counted: (count) => `ждут апрува: ${count}` },
   thread: { title: 'Ответ в треде', counted: (count) => `ждут ответа: ${count}` },

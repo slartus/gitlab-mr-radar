@@ -182,9 +182,11 @@ async function performRefresh() {
   const previous = (await chrome.storage.local.get(STORAGE_KEYS.dashboard))[STORAGE_KEYS.dashboard];
   try {
     const isSelectedMode = projectFilterMode === PROJECT_FILTER_MODES.selected;
-    const dashboard = await collectDashboard(new GitLabClient(baseUrl, token), {
+    const storedCache = (await chrome.storage.local.get(STORAGE_KEYS.threadCache))[STORAGE_KEYS.threadCache];
+    const { threadCache, ...dashboard } = await collectDashboard(new GitLabClient(baseUrl, token), {
       selectedProjectIds: isSelectedMode ? selectedProjectIds : null,
       ignoredCheckNames,
+      threadCache: storedCache?.baseUrl === baseUrl ? storedCache : null,
     });
     dashboard.baseUrl = baseUrl;
     dashboard.filters = {
@@ -194,7 +196,10 @@ async function performRefresh() {
     if (isSelectedMode && dashboard.watchedProjects === 0 && !dashboard.projectsUnavailable) {
       dashboard.warning = 'Ни один выбранный проект больше не доступен — обновите выбор в настройках';
     }
-    await chrome.storage.local.set({ [STORAGE_KEYS.dashboard]: dashboard });
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.dashboard]: dashboard,
+      [STORAGE_KEYS.threadCache]: { ...threadCache, baseUrl },
+    });
     const userState = await loadUserState();
     await scheduleSnoozeExpiry(userState);
     await showCounts(deriveView(dashboard, userState).counts);

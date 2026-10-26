@@ -1,9 +1,11 @@
 import {
   GitLabError,
+  MERGE_REQUEST_STATES_BATCH,
   fetchApprovals,
   fetchAuthoredPipelines,
   fetchDiscussions,
   fetchMaintainedProjects,
+  fetchMergeRequestStates,
   fetchPipelineFailures,
 } from './gitlab.js';
 
@@ -15,6 +17,10 @@ const MENTION_ACTIONS = new Set(['mentioned', 'directly_addressed']);
 export const mrKey = (mr) => `${mr.project_id}!${mr.iid}`;
 const mrReference = (mr) => mr.references?.full ?? `!${mr.iid}`;
 const isDraft = (mr) => Boolean(mr.draft ?? mr.work_in_progress);
+const projectPathOf = (mr) => {
+  const reference = mr.references?.full;
+  return reference?.includes('!') ? reference.slice(0, reference.lastIndexOf('!')) : null;
+};
 const uniqueBy = (items, key) => [...new Map(items.map((item) => [key(item), item])).values()];
 const byUpdatedDesc = (a, b) => b.updatedAt.localeCompare(a.updatedAt);
 const byMentionedDesc = (a, b) => b.mentionedAt.localeCompare(a.mentionedAt);
@@ -82,14 +88,66 @@ async function fetchThreadsAwaitingReply(client, mr, me) {
   return countThreadsAwaitingReply(await fetchDiscussions(client, mr), mr, me);
 }
 
-async function fetchDetails(client, mr, me, isReviewing) {
+async function fetchDetails(client, mr, me, shouldCheckThreads) {
   const approvals = await fetchApprovals(client, mr);
-  const shouldCheckThreads = mr.author.id === me.id || isReviewing;
   return {
     approvedByMe: Boolean(approvals.user_has_approved),
     approvalsCount: approvals.approved_by?.length ?? 0,
     threadsAwaitingReply: shouldCheckThreads ? await fetchThreadsAwaitingReply(client, mr, me) : 0,
   };
+}
+
+const threadStateKey = (mr, state) =>
+  `${mr.updated_at}:${state.userNotesCount}:${state.unresolvedThreads}:${state.resolvedThreads}`;
+
+async function detailsFromState(client, mr, me, state, shouldCheckThreads, threadCache) {
+  const details = {
+    approvedByMe: state.approverIds.includes(me.id),
+    approvalsCount: state.approverIds.length,
+    threadsAwaitingReply: 0,
+  };
+  if (!shouldCheckThreads || state.userNotesCount === 0 || state.unresolvedThreads <= 0) {
+    return { details };
+  }
+  const stateKey = threadStateKey(mr, state);
+  const cached = threadCache[mrKey(mr)];
+  const threadsAwaitingReply =
+    cached?.stateKey === stateKey
+      ? cached.threadsAwaitingReply
+      : countThreadsAwaitingReply(await fetchDiscussions(client, mr), mr, me);
+  return { details: { ...details, threadsAwaitingReply }, cacheEntry: { stateKey, threadsAwaitingReply } };
+}
+
+function chunk(items, size) {
+  return Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
+    items.slice(index * size, (index + 1) * size),
+  );
+}
+
+async function fetchStates(client, mrs) {
+  const iidsByPath = new Map();
+  mrs.forEach((mr) => {
+    const path = projectPathOf(mr);
+    if (path) {
+      iidsByPath.set(path, [...(iidsByPath.get(path) ?? []), mr]);
+    }
+  });
+  const batches = [...iidsByPath].flatMap(([path, pathMrs]) =>
+    chunk(pathMrs, MERGE_REQUEST_STATES_BATCH).map((batch) => ({ path, batch })),
+  );
+  const results = await mapLimit(batches, CONCURRENCY, ({ path, batch }) =>
+    optional(fetchMergeRequestStates(client, path, batch.map((mr) => mr.iid))),
+  );
+  const states = new Map();
+  batches.forEach(({ batch }, index) =>
+    batch.forEach((mr) => {
+      const state = results[index]?.get(mr.iid);
+      if (state) {
+        states.set(mrKey(mr), state);
+      }
+    }),
+  );
+  return states;
 }
 
 function toItem(mr, extra) {
@@ -145,10 +203,11 @@ const pipelineOf = (raw, mr) => raw.authoredPipelines?.get(mrReference(mr)) ?? n
 export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
   const me = await client.get('/user');
 
-  const [maintainedProjects, authoredMrs, reviewingMrs, authoredPipelines, todos] = await Promise.all([
+  const [maintainedProjects, authoredMrs, reviewingMrs, assignedMrs, authoredPipelines, todos] = await Promise.all([
     optional(fetchMaintainedProjects(client)),
     client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened' }),
     client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
+    optional(client.getAll('/merge_requests', { scope: 'assigned_to_me', state: 'opened' })),
     optional(fetchAuthoredPipelines(client)),
     optional(client.getAll('/todos', { state: 'pending', type: 'MergeRequest' })),
   ]);
@@ -173,6 +232,8 @@ export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
     me,
     authoredMrs,
     reviewingMrs,
+    assignedMrs: (assignedMrs ?? []).filter((mr) => mr.author.id !== me.id),
+    assignedUnavailable: assignedMrs === null,
     maintainedMrs: maintainedMrLists
       .flatMap((list) => list ?? [])
       .filter((mr) => !isDraft(mr) && mr.author.id !== me.id),
@@ -184,18 +245,29 @@ export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
   };
 }
 
-export async function enrich(client, raw) {
-  const { me, authoredMrs, reviewingMrs, maintainedMrs } = raw;
-  const reviewingKeys = new Set(reviewingMrs.map(mrKey));
-  const allMrs = uniqueBy([...authoredMrs, ...reviewingMrs, ...maintainedMrs], mrKey);
+export async function enrich(client, raw, threadCache = null) {
+  const { me, authoredMrs, reviewingMrs, assignedMrs, maintainedMrs } = raw;
+  const threadWatchKeys = new Set([...authoredMrs, ...reviewingMrs, ...assignedMrs].map(mrKey));
+  const allMrs = uniqueBy([...authoredMrs, ...reviewingMrs, ...assignedMrs, ...maintainedMrs], mrKey);
+  const cachedThreads = threadCache?.userId === me.id ? threadCache.entries : {};
 
+  const states = await fetchStates(client, allMrs);
   const skippedErrors = [];
-  const details = await mapLimit(allMrs, CONCURRENCY, (mr) =>
-    orSkip(() => fetchDetails(client, mr, me, reviewingKeys.has(mrKey(mr))), skippedErrors),
+  const results = await mapLimit(allMrs, CONCURRENCY, (mr) =>
+    orSkip(async () => {
+      const shouldCheckThreads = threadWatchKeys.has(mrKey(mr));
+      const state = states.get(mrKey(mr));
+      return state
+        ? detailsFromState(client, mr, me, state, shouldCheckThreads, cachedThreads)
+        : { details: await fetchDetails(client, mr, me, shouldCheckThreads) };
+    }, skippedErrors),
   );
-  assertNotAllFailed(details, skippedErrors);
+  assertNotAllFailed(results, skippedErrors);
   const detailsByKey = new Map(
-    allMrs.map((mr, index) => [mrKey(mr), details[index]]).filter(([, detail]) => detail !== null),
+    allMrs.map((mr, index) => [mrKey(mr), results[index]?.details]).filter(([, detail]) => detail),
+  );
+  const threadEntries = Object.fromEntries(
+    allMrs.map((mr, index) => [mrKey(mr), results[index]?.cacheEntry]).filter(([, entry]) => entry),
   );
 
   const failedAuthored = authoredMrs.filter(
@@ -208,12 +280,13 @@ export async function enrich(client, raw) {
   return {
     details: detailsByKey,
     pipelineFailures: new Map(failedAuthored.map((mr, index) => [mrKey(mr), failures[index]])),
-    skippedMrs: details.filter((detail) => detail === null).length,
+    skippedMrs: results.filter((result) => result === null).length,
+    threadCache: { userId: me.id, entries: threadEntries },
   };
 }
 
 export function classify(raw, { details, pipelineFailures }, ignoredCheckNames = []) {
-  const { me, authoredMrs, reviewingMrs, maintainedMrs, todos } = raw;
+  const { me, authoredMrs, reviewingMrs, assignedMrs, maintainedMrs, todos } = raw;
   const reviewingKeys = new Set(reviewingMrs.map(mrKey));
   const toItems = (mrs) =>
     mrs
@@ -224,8 +297,10 @@ export function classify(raw, { details, pipelineFailures }, ignoredCheckNames =
       });
 
   const reviewing = toItems(reviewingMrs.filter((mr) => mr.author.id !== me.id));
-  const mentioned = collectMentions(todos ?? [], new Set(reviewing.map((item) => item.key)));
-  const awaitingApproval = toItems(maintainedMrs.filter((mr) => !reviewingKeys.has(mrKey(mr)))).filter(
+  const assigned = toItems(assignedMrs.filter((mr) => !reviewingKeys.has(mrKey(mr))));
+  const personalKeys = new Set([...reviewing, ...assigned].map((item) => item.key));
+  const mentioned = collectMentions(todos ?? [], personalKeys);
+  const awaitingApproval = toItems(maintainedMrs.filter((mr) => !personalKeys.has(mrKey(mr)))).filter(
     (item) => !item.approvedByMe,
   );
   const ignoredChecks = new Set(ignoredCheckNames.map(normalizeCheckName));
@@ -237,12 +312,13 @@ export function classify(raw, { details, pipelineFailures }, ignoredCheckNames =
       ignoredChecks,
     ),
   }));
-  const threads = uniqueBy([...authored, ...reviewing], (item) => item.key).filter(
+  const threads = uniqueBy([...authored, ...reviewing, ...assigned], (item) => item.key).filter(
     (item) => item.threadsAwaitingReply > 0,
   );
 
   return {
     reviewing: reviewing.sort(byUpdatedDesc),
+    assigned: assigned.sort(byUpdatedDesc),
     mentioned: mentioned.sort(byMentionedDesc),
     awaitingApproval: awaitingApproval.sort(byUpdatedDesc),
     threads: threads.sort(byUpdatedDesc),
@@ -250,9 +326,12 @@ export function classify(raw, { details, pipelineFailures }, ignoredCheckNames =
   };
 }
 
-export async function collectDashboard(client, { selectedProjectIds = null, ignoredCheckNames = [] } = {}) {
+export async function collectDashboard(
+  client,
+  { selectedProjectIds = null, ignoredCheckNames = [], threadCache = null } = {},
+) {
   const raw = await fetchRaw(client, { selectedProjectIds });
-  const enriched = await enrich(client, raw);
+  const enriched = await enrich(client, raw, threadCache);
   return {
     fetchedAt: new Date().toISOString(),
     username: raw.me.username,
@@ -262,6 +341,8 @@ export async function collectDashboard(client, { selectedProjectIds = null, igno
     projectsUnavailable: raw.projectsUnavailable,
     pipelinesUnavailable: raw.authoredPipelines === null,
     mentionsUnavailable: raw.todos === null,
+    assignedUnavailable: raw.assignedUnavailable,
     sections: classify(raw, enriched, ignoredCheckNames),
+    threadCache: enriched.threadCache,
   };
 }

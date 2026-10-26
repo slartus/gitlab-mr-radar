@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 
 import { compareVersions, normalizeBaseUrl, parseCheckNames } from '../src/config.js';
-import { GitLabClient, GitLabError, fetchPipelineFailures } from '../src/gitlab.js';
+import { GitLabClient, GitLabError, fetchMergeRequestStates, fetchPipelineFailures } from '../src/gitlab.js';
 import { FakeClient } from './helpers.js';
 
 const BASE_URL = 'https://gitlab.example.com';
@@ -108,5 +108,42 @@ describe('config helpers', () => {
   it('normalizes the base URL and rejects plain http', () => {
     assert.equal(normalizeBaseUrl(' https://gitlab.example.com/gitlab/// '), 'https://gitlab.example.com/gitlab');
     assert.throws(() => normalizeBaseUrl('http://gitlab.example.com'), /https/);
+  });
+});
+
+describe('fetchMergeRequestStates', () => {
+  it('maps approvers and thread counters by iid', async () => {
+    let variables = null;
+    const client = new FakeClient({}, {
+      graphql: (query, vars) => {
+        variables = vars;
+        return {
+          project: {
+            mergeRequests: {
+              nodes: [
+                {
+                  iid: '7',
+                  userNotesCount: 4,
+                  resolvableDiscussionsCount: 3,
+                  resolvedDiscussionsCount: 1,
+                  approvedBy: { nodes: [{ id: 'gid://gitlab/User/42' }] },
+                },
+              ],
+            },
+          },
+        };
+      },
+    });
+
+    const states = await fetchMergeRequestStates(client, 'group/project', [7, 8]);
+
+    assert.deepEqual(variables, { fullPath: 'group/project', iids: ['7', '8'] });
+    assert.deepEqual(states.get(7), { approverIds: [42], userNotesCount: 4, unresolvedThreads: 2, resolvedThreads: 1 });
+    assert.equal(states.has(8), false);
+  });
+
+  it('returns no states for an inaccessible project', async () => {
+    const client = new FakeClient({}, { graphql: () => ({ project: null }) });
+    assert.equal((await fetchMergeRequestStates(client, 'group/project', [1])).size, 0);
   });
 });

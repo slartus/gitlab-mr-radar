@@ -351,7 +351,7 @@ form.addEventListener('submit', async (event) => {
     await revokeHostPermission(savedBaseUrl);
   }
   if (savedBaseUrl !== baseUrl) {
-    await chrome.storage.local.remove([STORAGE_KEYS.dashboard, STORAGE_KEYS.userState]);
+    await chrome.storage.local.remove([STORAGE_KEYS.dashboard, STORAGE_KEYS.userState, STORAGE_KEYS.threadCache]);
   }
   await chrome.storage.local.set({
     [STORAGE_KEYS.settings]: {

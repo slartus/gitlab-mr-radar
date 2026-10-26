@@ -19,6 +19,24 @@ const AUTHORED_PIPELINES_QUERY = `
   }
 `;
 
+const MERGE_REQUEST_STATES_QUERY = `
+  query MergeRequestStates($fullPath: ID!, $iids: [String!]) {
+    project(fullPath: $fullPath) {
+      mergeRequests(iids: $iids, first: 100) {
+        nodes {
+          iid
+          userNotesCount
+          resolvableDiscussionsCount
+          resolvedDiscussionsCount
+          approvedBy { nodes { id } }
+        }
+      }
+    }
+  }
+`;
+
+export const MERGE_REQUEST_STATES_BATCH = 100;
+
 export class GitLabError extends Error {
   constructor(status, message, path) {
     super(message);
@@ -190,6 +208,24 @@ export async function fetchMaintainedProjects(client) {
     sort: 'asc',
   });
   return projects.filter(hasMergeRequests);
+}
+
+export async function fetchMergeRequestStates(client, fullPath, iids) {
+  const data = await client.graphql(MERGE_REQUEST_STATES_QUERY, { fullPath, iids: iids.map(String) });
+  const isComplete = (node) =>
+    Array.isArray(node.approvedBy?.nodes) &&
+    [node.userNotesCount, node.resolvableDiscussionsCount, node.resolvedDiscussionsCount].every(Number.isInteger);
+  return new Map(
+    (data.project?.mergeRequests?.nodes ?? []).filter(isComplete).map((node) => [
+      Number(node.iid),
+      {
+        approverIds: node.approvedBy.nodes.map((user) => Number(user.id.split('/').pop())),
+        userNotesCount: node.userNotesCount,
+        unresolvedThreads: node.resolvableDiscussionsCount - node.resolvedDiscussionsCount,
+        resolvedThreads: node.resolvedDiscussionsCount,
+      },
+    ]),
+  );
 }
 
 export const fetchApprovals = (client, mr) =>

@@ -4,16 +4,24 @@ import { describe, it } from 'node:test';
 import { collectDashboard, collectMentions, countThreadsAwaitingReply } from '../src/dashboard.js';
 import { GitLabError } from '../src/gitlab.js';
 import { deriveView } from '../src/view.js';
-import { ALICE, BOB, FakeClient, ME, emptyDashboardRoutes, mr, note, serverError } from './helpers.js';
+import {
+  ALICE,
+  BOB,
+  FakeClient,
+  ME,
+  emptyDashboardRoutes,
+  mergeRequestsRoute,
+  mr,
+  note,
+  serverError,
+  statesGraphql,
+} from './helpers.js';
 
 const approvals = (approvedBy = [], userHasApproved = false) => ({
   approved_by: approvedBy.map((user) => ({ user })),
   user_has_approved: userHasApproved,
 });
 
-function mergeRequestsRoute({ authored = [], reviewing = [] }) {
-  return (params) => (params.scope === 'created_by_me' ? authored : reviewing);
-}
 
 describe('countThreadsAwaitingReply', () => {
   const foreignMr = mr({ iid: 1, author: ALICE });
@@ -302,5 +310,188 @@ describe('collectDashboard', () => {
     assert.equal(item.pipeline.failures, null);
     assert.equal(item.pipeline.onlyIgnoredFailures, false);
     assert.equal(deriveView(dashboard).counts.failedCi, 1);
+  });
+});
+
+describe('collectDashboard with GraphQL merge request states', () => {
+  const authored = mr({ iid: 1, author: ME });
+  const reviewing = mr({ iid: 2 });
+  const maintained = mr({ iid: 3, author: BOB });
+  const routes = () => ({
+    ...emptyDashboardRoutes(),
+    '/projects': [{ id: 10 }],
+    '/merge_requests': mergeRequestsRoute({ authored: [authored], reviewing: [reviewing] }),
+    '/projects/10/merge_requests': [reviewing, maintained],
+    '/projects/10/merge_requests/1/discussions': [{ notes: [note(ALICE)] }],
+    '/projects/10/merge_requests/2/discussions': [{ notes: [note(ME), note(ALICE)] }],
+  });
+  const states = {
+    'group/project': {
+      1: { approvers: [ALICE], notes: 1, resolvable: 1, resolved: 0 },
+      2: { approvers: [ME], notes: 2, resolvable: 1, resolved: 0 },
+      3: { approvers: [], notes: 5, resolvable: 2, resolved: 0 },
+    },
+  };
+  const discussionCalls = (client) => client.calls.filter((call) => call.path.endsWith('/discussions'));
+
+  it('takes approvals from one GraphQL query and loads discussions only where threads are unresolved', async () => {
+    const client = new FakeClient(routes(), { graphql: statesGraphql(states) });
+
+    const dashboard = await collectDashboard(client);
+
+    assert.ok(!client.calls.some((call) => call.path.endsWith('/approvals')));
+    assert.deepEqual(discussionCalls(client).map((call) => call.path).sort(), [
+      '/projects/10/merge_requests/1/discussions',
+      '/projects/10/merge_requests/2/discussions',
+    ]);
+    assert.equal(dashboard.sections.authored[0].approvalsCount, 1);
+    assert.equal(dashboard.sections.reviewing[0].approvedByMe, true);
+    assert.deepEqual(dashboard.sections.awaitingApproval.map((item) => item.key), ['10!3']);
+    assert.deepEqual(dashboard.sections.threads.map((item) => item.key).sort(), ['10!1', '10!2']);
+    assert.deepEqual(dashboard.threadCache, {
+      userId: ME.id,
+      entries: {
+        '10!1': { stateKey: '2026-01-01T00:00:00Z:1:1:0', threadsAwaitingReply: 1 },
+        '10!2': { stateKey: '2026-01-01T00:00:00Z:2:1:0', threadsAwaitingReply: 1 },
+      },
+    });
+  });
+
+  it('reuses cached thread counts while the thread counters stay the same', async () => {
+    const first = await collectDashboard(new FakeClient(routes(), { graphql: statesGraphql(states) }));
+    const changed = {
+      'group/project': { ...states['group/project'], 2: { approvers: [], notes: 3, resolvable: 1, resolved: 0 } },
+    };
+    const client = new FakeClient(routes(), { graphql: statesGraphql(changed) });
+
+    await collectDashboard(client, { threadCache: first.threadCache });
+
+    assert.deepEqual(discussionCalls(client).map((call) => call.path), ['/projects/10/merge_requests/2/discussions']);
+  });
+
+  it('reloads discussions when the MR was updated even if the counters did not change', async () => {
+    const first = await collectDashboard(new FakeClient(routes(), { graphql: statesGraphql(states) }));
+    const updatedAuthored = { ...authored, updated_at: '2026-01-02T00:00:00Z' };
+    const client = new FakeClient(
+      { ...routes(), '/merge_requests': mergeRequestsRoute({ authored: [updatedAuthored], reviewing: [reviewing] }) },
+      { graphql: statesGraphql(states) },
+    );
+
+    await collectDashboard(client, { threadCache: first.threadCache });
+
+    assert.deepEqual(discussionCalls(client).map((call) => call.path), ['/projects/10/merge_requests/1/discussions']);
+  });
+
+  it('ignores a thread cache of another user', async () => {
+    const client = new FakeClient(routes(), { graphql: statesGraphql(states) });
+    await collectDashboard(client, {
+      threadCache: { userId: 99, entries: { '10!1': { stateKey: '1:1:0', threadsAwaitingReply: 7 } } },
+    });
+    assert.equal(discussionCalls(client).length, 2);
+  });
+
+  it('falls back to REST only for projects whose GraphQL query fails', async () => {
+    const other = mr({ projectId: 11, iid: 2, references: { full: 'group/other!2' } });
+    const client = new FakeClient(
+      {
+        ...emptyDashboardRoutes(),
+        '/merge_requests': mergeRequestsRoute({ reviewing: [reviewing, other] }),
+        '/projects/11/merge_requests/2/approvals': approvals([ME], true),
+      },
+      {
+        graphql: (query, variables) => {
+          if (variables.fullPath === 'group/other') {
+            throw new GitLabError(200, 'GraphQL: field missing', '/graphql');
+          }
+          return statesGraphql({ 'group/project': { 2: { approvers: [] } } })(query, variables);
+        },
+      },
+    );
+
+    const { sections } = await collectDashboard(client);
+
+    assert.deepEqual(
+      client.calls.filter((call) => call.path.endsWith('/approvals')).map((call) => call.path),
+      ['/projects/11/merge_requests/2/approvals'],
+    );
+    const byKey = Object.fromEntries(sections.reviewing.map((item) => [item.key, item.approvedByMe]));
+    assert.deepEqual(byKey, { '10!2': false, '11!2': true });
+  });
+
+  it('falls back to REST for MRs with incomplete GraphQL data', async () => {
+    const client = new FakeClient(
+      { ...routes(), '/projects/10/merge_requests/3/approvals': approvals([ME], true) },
+      {
+        graphql: (query, variables) => {
+          const data = statesGraphql(states)(query, variables);
+          data.project.mergeRequests.nodes.find((node) => node.iid === '3').approvedBy = null;
+          return data;
+        },
+      },
+    );
+
+    const dashboard = await collectDashboard(client);
+
+    assert.deepEqual(
+      client.calls.filter((call) => call.path.endsWith('/approvals')).map((call) => call.path),
+      ['/projects/10/merge_requests/3/approvals'],
+    );
+    assert.deepEqual(dashboard.sections.awaitingApproval, []);
+  });
+
+  it('falls back to REST approvals when GraphQL is unavailable', async () => {
+    const client = new FakeClient({
+      ...routes(),
+      '/projects/10/merge_requests/1/approvals': approvals([ALICE]),
+      '/projects/10/merge_requests/2/approvals': approvals(),
+      '/projects/10/merge_requests/3/approvals': approvals(),
+    });
+
+    const dashboard = await collectDashboard(client);
+
+    assert.equal(client.calls.filter((call) => call.path.endsWith('/approvals')).length, 3);
+    assert.equal(dashboard.sections.authored[0].approvalsCount, 1);
+  });
+
+  it('shows MRs assigned to me in their own section and counts them in the badge', async () => {
+    const assigned = mr({ iid: 4, author: BOB });
+    const client = new FakeClient(
+      {
+        ...routes(),
+        '/merge_requests': mergeRequestsRoute({
+          authored: [authored],
+          reviewing: [reviewing],
+          assigned: [assigned, authored],
+        }),
+        '/projects/10/merge_requests': [reviewing, maintained, assigned],
+        '/todos': [{ action_name: 'mentioned', target: { ...assigned, state: 'opened' }, author: ALICE, created_at: 'x' }],
+      },
+      { graphql: statesGraphql({ 'group/project': { ...states['group/project'], 4: {} } }) },
+    );
+
+    const dashboard = await collectDashboard(client);
+
+    assert.deepEqual(dashboard.sections.assigned.map((item) => item.key), ['10!4']);
+    assert.ok(!dashboard.sections.awaitingApproval.some((item) => item.key === '10!4'));
+    assert.deepEqual(dashboard.sections.mentioned, []);
+    assert.equal(deriveView(dashboard).counts.waiting, 4);
+  });
+
+  it('keeps working when MRs assigned to me cannot be loaded', async () => {
+    const client = new FakeClient(
+      {
+        ...routes(),
+        '/merge_requests': (params) =>
+          params.scope === 'assigned_to_me'
+            ? Promise.reject(serverError('/merge_requests'))
+            : mergeRequestsRoute({ authored: [authored], reviewing: [reviewing] })(params),
+      },
+      { graphql: statesGraphql(states) },
+    );
+
+    const dashboard = await collectDashboard(client);
+
+    assert.equal(dashboard.assignedUnavailable, true);
+    assert.deepEqual(dashboard.sections.assigned, []);
   });
 });

@@ -63,6 +63,41 @@ export class FakeClient {
 
 export const serverError = (path) => new GitLabError(500, `500 Internal Server Error: ${path}`, path);
 
+export function mergeRequestsRoute({ authored = [], reviewing = [], assigned = [] }) {
+  return (params) => {
+    if (params.scope === 'created_by_me') return authored;
+    if (params.scope === 'assigned_to_me') return assigned;
+    return reviewing;
+  };
+}
+
+export function statesGraphql(statesByPath) {
+  return (query, variables) => {
+    if (!query.includes('MergeRequestStates')) {
+      throw new GitLabError(404, 'Unexpected GraphQL query', '/graphql');
+    }
+    const states = statesByPath[variables.fullPath] ?? {};
+    return {
+      project: {
+        mergeRequests: {
+          nodes: variables.iids
+            .filter((iid) => states[iid])
+            .map((iid) => {
+              const { approvers = [], notes = 0, resolvable = 0, resolved = 0 } = states[iid];
+              return {
+                iid,
+                userNotesCount: notes,
+                resolvableDiscussionsCount: resolvable,
+                resolvedDiscussionsCount: resolved,
+                approvedBy: { nodes: approvers.map((user) => ({ id: `gid://gitlab/User/${user.id}` })) },
+              };
+            }),
+        },
+      },
+    };
+  };
+}
+
 export function emptyDashboardRoutes() {
   return {
     '/user': ME,
