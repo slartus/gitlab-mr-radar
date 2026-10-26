@@ -5,11 +5,11 @@ Chrome-расширение (Manifest V3) для любого GitLab-инста�
 <p>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/popup-dark.png">
-    <img src="docs/popup-light.png" alt="Popup: секции MR, раскрытый блок упавшего CI" width="420">
+    <img src="docs/popup-light.png" alt="Popup: секции MR, назначенные, упоминания в задачах, раскрытый блок упавшего CI, сломанный default branch" width="420">
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/options-dark.png">
-    <img src="docs/options-light.png" alt="Настройки: GitLab URL, токен, исключения CI, выбор проектов деревом" width="320">
+    <img src="docs/options-light.png" alt="Настройки: GitLab URL, токен, исключения CI, уведомления, выбор проектов деревом" width="320">
   </picture>
 </p>
 
