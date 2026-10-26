@@ -323,19 +323,29 @@ const isCompleteDashboard = (dashboard) =>
   !dashboard.assignedUnavailable &&
   !dashboard.defaultBranchesUnavailable;
 
-async function writeSnoozed(change) {
+async function writeUserState(change) {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.userState);
-  const userState = stored[STORAGE_KEYS.userState] ?? {};
-  const current = isCompleteDashboard(currentDashboard)
-    ? pruneSnoozed(userState.snoozed, itemsByKey(currentDashboard))
-    : (userState.snoozed ?? {});
-  await chrome.storage.local.set({ [STORAGE_KEYS.userState]: { ...userState, snoozed: change(current) } });
+  await chrome.storage.local.set({ [STORAGE_KEYS.userState]: change(stored[STORAGE_KEYS.userState] ?? {}) });
 }
 
-function updateSnoozed(change) {
-  pendingUserStateWrite = pendingUserStateWrite.then(() => writeSnoozed(change)).catch(console.error);
+function updateUserState(change) {
+  pendingUserStateWrite = pendingUserStateWrite.then(() => writeUserState(change)).catch(console.error);
   return pendingUserStateWrite;
 }
+
+const updateSnoozed = (change) =>
+  updateUserState((userState) => {
+    const current = isCompleteDashboard(currentDashboard)
+      ? pruneSnoozed(userState.snoozed, itemsByKey(currentDashboard))
+      : (userState.snoozed ?? {});
+    return { ...userState, snoozed: change(current) };
+  });
+
+const dismissTokenProblem = ({ kind, dismissKey }) =>
+  updateUserState((userState) => ({
+    ...userState,
+    dismissedTokenProblems: { ...userState.dismissedTokenProblems, [kind]: dismissKey },
+  }));
 
 const snoozeItem = (item, option) =>
   updateSnoozed((snoozed) => ({ ...snoozed, [item.key]: createSnooze(option, item) }));
@@ -396,8 +406,22 @@ function renderSection(section, items, baseUrl, { collapsed = false } = {}) {
   return details;
 }
 
-function renderTokenNotice(dashboard) {
-  const problems = dashboard?.baseUrl ? tokenProblems(dashboard.token) : [];
+function renderTokenProblem(problem) {
+  const text = createElement('span', { text: problem.text });
+  if (!problem.dismissKey) {
+    return createElement('div', { className: 'notice-row' }, [text]);
+  }
+  const dismiss = createElement('button', {
+    className: 'notice-dismiss',
+    text: 'Скрыть',
+    attrs: { type: 'button', 'aria-label': `Скрыть: ${problem.text}` },
+  });
+  dismiss.addEventListener('click', () => dismissTokenProblem(problem));
+  return createElement('div', { className: 'notice-row' }, [text, dismiss]);
+}
+
+function renderTokenNotice(dashboard, userState) {
+  const problems = dashboard?.baseUrl ? tokenProblems(dashboard.token, userState?.dismissedTokenProblems) : [];
   elements.token.hidden = problems.length === 0;
   if (!problems.length) {
     elements.token.replaceChildren();
@@ -409,13 +433,13 @@ function renderTokenNotice(dashboard) {
     event.preventDefault();
     openUrl(url);
   });
-  elements.token.replaceChildren(...problems.map((text) => createElement('span', { text })), link);
+  elements.token.replaceChildren(...problems.map(renderTokenProblem), link);
 }
 
 function render(dashboard, userState) {
   currentDashboard = dashboard;
   currentUserState = userState;
-  renderTokenNotice(dashboard);
+  renderTokenNotice(dashboard, userState);
   const problem = dashboard?.error ?? dashboard?.warning;
   elements.error.hidden = !problem;
   elements.error.textContent = problem ?? '';

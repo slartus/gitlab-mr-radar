@@ -124,26 +124,31 @@ export function collectNotificationEvents(previous, next, userState = {}, now = 
   );
 }
 
-export function tokenProblems(token, now = Date.now()) {
+export function tokenProblems(token, dismissed = {}, now = Date.now()) {
   if (!token) {
     return [];
   }
   const problems = [];
   if (!token.expiresAt) {
-    problems.push('Токен бессрочный — лучше пересоздать его со сроком действия');
+    problems.push({ kind: 'noExpiry', text: 'Токен бессрочный — лучше пересоздать его со сроком действия' });
   } else {
     const msLeft = Date.parse(token.expiresAt) - now;
     if (msLeft <= 0) {
-      problems.push('Срок действия токена истёк');
+      problems.push({ kind: 'expiry', text: 'Срок действия токена истёк' });
     } else if (msLeft < DAY_MS) {
-      problems.push('Токен истекает сегодня');
+      problems.push({ kind: 'expiry', text: 'Токен истекает сегодня' });
     } else if (msLeft <= TOKEN_EXPIRY_WARNING_DAYS * DAY_MS) {
-      problems.push(`Токен истекает через ${Math.floor(msLeft / DAY_MS)} дн.`);
+      problems.push({ kind: 'expiry', text: `Токен истекает через ${Math.floor(msLeft / DAY_MS)} дн.` });
     }
   }
-  const extraScopes = token.scopes.filter((scope) => scope !== REQUIRED_TOKEN_SCOPE);
-  if (extraScopes.length) {
-    problems.push(`У токена лишние права: ${extraScopes.join(', ')} — достаточно ${REQUIRED_TOKEN_SCOPE}`);
+  const extraScopes = token.scopes.filter((scope) => scope !== REQUIRED_TOKEN_SCOPE).sort();
+  const extraScopesKey = extraScopes.join(',');
+  if (extraScopes.length && dismissed.extraScopes !== extraScopesKey) {
+    problems.push({
+      kind: 'extraScopes',
+      text: `У токена лишние права: ${extraScopes.join(', ')} — достаточно ${REQUIRED_TOKEN_SCOPE}`,
+      dismissKey: extraScopesKey,
+    });
   }
   return problems;
 }

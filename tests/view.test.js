@@ -62,20 +62,32 @@ describe('links', () => {
 
 describe('tokenProblems', () => {
   const NOW = Date.parse('2026-03-10T12:00:00Z');
+  const texts = (token, dismissed) => tokenProblems(token, dismissed, NOW).map((problem) => problem.text);
 
   it('warns about expiry within a week, missing expiry and extra scopes', () => {
-    assert.deepEqual(tokenProblems({ expiresAt: '2026-04-10', scopes: ['read_api'] }, NOW), []);
-    assert.deepEqual(tokenProblems({ expiresAt: '2026-03-14', scopes: ['read_api'] }, NOW), [
-      'Токен истекает через 3 дн.',
-    ]);
-    assert.deepEqual(tokenProblems({ expiresAt: '2026-03-11', scopes: ['read_api'] }, NOW), ['Токен истекает сегодня']);
-    assert.deepEqual(tokenProblems({ expiresAt: '2026-03-10', scopes: ['read_api'] }, NOW), [
-      'Срок действия токена истёк',
-    ]);
-    assert.deepEqual(tokenProblems({ expiresAt: null, scopes: ['read_api', 'api', 'write_repository'] }, NOW), [
+    assert.deepEqual(texts({ expiresAt: '2026-04-10', scopes: ['read_api'] }), []);
+    assert.deepEqual(texts({ expiresAt: '2026-03-14', scopes: ['read_api'] }), ['Токен истекает через 3 дн.']);
+    assert.deepEqual(texts({ expiresAt: '2026-03-11', scopes: ['read_api'] }), ['Токен истекает сегодня']);
+    assert.deepEqual(texts({ expiresAt: '2026-03-10', scopes: ['read_api'] }), ['Срок действия токена истёк']);
+    assert.deepEqual(texts({ expiresAt: null, scopes: ['read_api', 'write_repository', 'api'] }), [
       'Токен бессрочный — лучше пересоздать его со сроком действия',
       'У токена лишние права: api, write_repository — достаточно read_api',
     ]);
-    assert.deepEqual(tokenProblems(null, NOW), []);
+    assert.deepEqual(texts(null), []);
+  });
+
+  it('lets only the extra scopes warning be dismissed, for the same set of scopes', () => {
+    const token = { expiresAt: null, scopes: ['read_api', 'write_repository', 'api'] };
+    const [noExpiry, extraScopes] = tokenProblems(token, {}, NOW);
+    assert.equal(noExpiry.dismissKey, undefined);
+    assert.equal(extraScopes.dismissKey, 'api,write_repository');
+
+    assert.deepEqual(texts(token, { extraScopes: 'api,write_repository' }), [
+      'Токен бессрочный — лучше пересоздать его со сроком действия',
+    ]);
+    assert.deepEqual(texts({ ...token, scopes: ['read_api', 'api'] }, { extraScopes: 'api,write_repository' }), [
+      'Токен бессрочный — лучше пересоздать его со сроком действия',
+      'У токена лишние права: api — достаточно read_api',
+    ]);
   });
 });

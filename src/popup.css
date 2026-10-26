@@ -355,3 +355,22 @@ li:hover .row-action,
   color: var(--accent);
   font-weight: 600;
 }
+
+.notice-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.notice-dismiss {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
