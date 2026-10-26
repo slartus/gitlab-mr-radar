@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>GitLab MR Radar</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div>
+      <strong>MR Radar</strong>
+      <span id="meta" class="muted"></span>
+    </div>
+    <div class="actions">
+      <button id="refresh" type="button" title="Обновить">⟳</button>
+      <button id="settings" type="button" title="Настройки">⚙</button>
+    </div>
+  </header>
+  <div id="error" class="error" hidden></div>
+  <main id="sections"></main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
