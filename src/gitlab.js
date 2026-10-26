@@ -5,6 +5,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RATE_LIMIT_RETRIES = 2;
 const MAX_RATE_LIMIT_WAIT_MS = 25_000;
 const SKIPPABLE_STATUSES = new Set([403, 404]);
+const MENTION_ACTIONS = new Set(['mentioned', 'directly_addressed']);
 
 const AUTHORED_PIPELINES_QUERY = `
   query AuthoredPipelines($after: String) {
@@ -263,6 +264,26 @@ export async function fetchMaintainedProjects(client) {
 
 export const normalizeCheckName = (name) => name.trim().toLowerCase();
 
+function collectMentions(todos, excludedKeys) {
+  const todosByMr = new Map();
+  todos
+    .filter((todo) => MENTION_ACTIONS.has(todo.action_name) && todo.target?.state === 'opened')
+    .filter((todo) => !excludedKeys.has(mrKey(todo.target)))
+    .forEach((todo) => {
+      const key = mrKey(todo.target);
+      todosByMr.set(key, [...(todosByMr.get(key) ?? []), todo]);
+    });
+  return [...todosByMr.values()].map((mrTodos) => {
+    const latest = mrTodos.reduce((a, b) => (a.created_at > b.created_at ? a : b));
+    return toItem(latest.target, {
+      mentionedBy: [...new Set(mrTodos.map((todo) => todo.author.username))],
+      mentionCount: mrTodos.length,
+      mentionUrl: latest.target_url,
+      updatedAt: latest.created_at,
+    });
+  });
+}
+
 async function withPipelineFailures(client, item, pipeline, ignoredChecks) {
   if (pipeline?.status !== 'failed') {
     return { ...item, pipeline };
@@ -284,7 +305,7 @@ async function withPipelineFailures(client, item, pipeline, ignoredChecks) {
 export async function collectDashboard(client, { selectedProjectIds = null, ignoredCheckNames = [] } = {}) {
   const me = await client.get('/user');
 
-  const [maintainedProjects, authoredMrs, reviewingMrs, authoredPipelines] = await Promise.all([
+  const [maintainedProjects, authoredMrs, reviewingMrs, authoredPipelines, todos] = await Promise.all([
     fetchMaintainedProjects(client),
     client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened' }),
     client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
@@ -294,6 +315,9 @@ export async function collectDashboard(client, { selectedProjectIds = null, igno
       }
       throw error;
     }),
+    client
+      .getAll('/todos', { state: 'pending', type: 'MergeRequest' })
+      .catch((error) => (error instanceof GitLabError ? null : Promise.reject(error))),
   ]);
   const watchedIds = selectedProjectIds && new Set(selectedProjectIds);
   const watchedProjects = watchedIds
@@ -341,6 +365,7 @@ export async function collectDashboard(client, { selectedProjectIds = null, igno
       });
 
   const reviewing = toItems(reviewingMrs.filter((mr) => mr.author.id !== me.id));
+  const mentioned = collectMentions(todos ?? [], new Set(reviewing.map((item) => item.key)));
   const awaitingApproval = toItems(maintainedMrs.filter((mr) => !reviewingKeys.has(mrKey(mr)))).filter(
     (item) => !item.approvedByMe,
   );
@@ -359,8 +384,10 @@ export async function collectDashboard(client, { selectedProjectIds = null, igno
     skippedProjects,
     skippedMrs,
     pipelinesUnavailable: authoredPipelines === null,
+    mentionsUnavailable: todos === null,
     sections: {
       reviewing: reviewing.sort(byUpdatedDesc),
+      mentioned: mentioned.sort(byUpdatedDesc),
       awaitingApproval: awaitingApproval.sort(byUpdatedDesc),
       threads: threads.sort(byUpdatedDesc),
       authored: authored.sort(byUpdatedDesc),
@@ -369,8 +396,9 @@ export async function collectDashboard(client, { selectedProjectIds = null, igno
 }
 
 export function countActionable(dashboard) {
-  const { reviewing, awaitingApproval, threads, authored } = dashboard.sections;
+  const { reviewing, mentioned, awaitingApproval, threads, authored } = dashboard.sections;
   const waiting = new Set([
+    ...mentioned.map((item) => item.key),
     ...reviewing.filter((item) => !item.approvedByMe && !item.draft).map((item) => item.key),
     ...awaitingApproval.map((item) => item.key),
     ...threads.map((item) => item.key),

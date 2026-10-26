@@ -3,6 +3,7 @@ import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
 
 const SECTIONS = [
   { id: 'reviewing', title: 'Меня назначили ревьюером', empty: 'Нет MR на ревью' },
+  { id: 'mentioned', title: 'Меня упомянули', empty: 'Нет новых упоминаний' },
   { id: 'awaitingApproval', title: 'Ждут моего апрува', empty: 'Всё заапрувлено' },
   { id: 'threads', title: 'Ждут моего ответа в тредах', empty: 'Нет неотвеченных тредов' },
   { id: 'authored', title: 'Мои MR', empty: 'Нет открытых MR' },
@@ -218,10 +219,19 @@ function renderCiBlock(item, baseUrl) {
   return block;
 }
 
+function authorLabel(item, sectionId) {
+  if (sectionId === 'mentioned') {
+    return `от @${item.mentionedBy.join(', @')}`;
+  }
+  return `@${item.author}`;
+}
+
 function renderItem(item, sectionId, baseUrl) {
-  const webUrl = isUnderBaseUrl(item.webUrl, baseUrl) ? item.webUrl : baseUrl;
+  const targetUrl = sectionId === 'mentioned' && item.mentionUrl ? item.mentionUrl : item.webUrl;
+  const webUrl = isUnderBaseUrl(targetUrl, baseUrl) ? targetUrl : baseUrl;
   const tags = [];
   if (item.draft) tags.push(tag('draft'));
+  if (sectionId === 'mentioned' && item.mentionCount > 1) tags.push(tag(`упоминаний: ${item.mentionCount}`, 'warn'));
   if (sectionId === 'reviewing' && item.approvedByMe) tags.push(tag('я апрувнул', 'ok'));
   if (item.threadsAwaitingReply > 0) tags.push(tag(`ждут ответа: ${item.threadsAwaitingReply}`, 'warn'));
   const showsPipeline = sectionId === 'authored' && Boolean(item.pipeline);
@@ -238,7 +248,7 @@ function renderItem(item, sectionId, baseUrl) {
 
   const subline = createElement('span', { className: 'sub' }, [
     createElement('span', { text: item.reference }),
-    ...(sectionId === 'authored' ? [] : [createElement('span', { text: `@${item.author}` })]),
+    ...(sectionId === 'authored' ? [] : [createElement('span', { text: authorLabel(item, sectionId) })]),
     createElement('span', { text: formatRelative(item.updatedAt) }),
     ...tags,
   ]);
@@ -275,13 +285,14 @@ function render(dashboard) {
     dashboard?.skippedProjects ? ` · пропущено проектов: ${dashboard.skippedProjects}` : '',
     dashboard?.skippedMrs ? ` · пропущено MR: ${dashboard.skippedMrs}` : '',
     dashboard?.pipelinesUnavailable ? ' · статусы CI недоступны' : '',
+    dashboard?.mentionsUnavailable ? ' · упоминания недоступны' : '',
   ].join('');
   elements.meta.textContent = dashboard?.fetchedAt
     ? `@${dashboard.username} · ${formatRelative(dashboard.fetchedAt)}${skipped}`
     : '';
   elements.sections.replaceChildren(
     ...(dashboard?.sections && dashboard.baseUrl
-      ? SECTIONS.map((section) => renderSection(section, dashboard.sections[section.id], dashboard.baseUrl))
+      ? SECTIONS.map((section) => renderSection(section, dashboard.sections[section.id] ?? [], dashboard.baseUrl))
       : []),
   );
 }
