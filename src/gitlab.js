@@ -1,11 +1,8 @@
 const PER_PAGE = 100;
-const CONCURRENCY = 6;
 const MAINTAINER_ACCESS_LEVEL = 40;
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RATE_LIMIT_RETRIES = 2;
 const MAX_RATE_LIMIT_WAIT_MS = 25_000;
-const SKIPPABLE_STATUSES = new Set([403, 404]);
-const MENTION_ACTIONS = new Set(['mentioned', 'directly_addressed']);
 
 const AUTHORED_PIPELINES_QUERY = `
   query AuthoredPipelines($after: String) {
@@ -121,77 +118,10 @@ export class GitLabClient {
   }
 }
 
-async function mapLimit(items, limit, mapper) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await mapper(items[index]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
-async function orSkip(action) {
-  try {
-    return await action();
-  } catch (error) {
-    if (error instanceof GitLabError && SKIPPABLE_STATUSES.has(error.status)) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-const mrKey = (mr) => `${mr.project_id}!${mr.iid}`;
-const isDraft = (mr) => Boolean(mr.draft ?? mr.work_in_progress);
-const uniqueBy = (items, key) => [...new Map(items.map((item) => [key(item), item])).values()];
 const hasMergeRequests = (project) =>
   project.merge_requests_enabled !== false && project.merge_requests_access_level !== 'disabled';
 
-function fetchApprovals(client, mr) {
-  return client.get(`/projects/${mr.project_id}/merge_requests/${mr.iid}/approvals`);
-}
-
-async function countThreadsAwaitingReply(client, mr, me) {
-  if (!mr.user_notes_count) {
-    return 0;
-  }
-  const discussions = await client.getAll(`/projects/${mr.project_id}/merge_requests/${mr.iid}/discussions`);
-  const isMyMr = mr.author.id === me.id;
-  return discussions.filter((discussion) => {
-    const notes = discussion.notes.filter((note) => !note.system);
-    const isUnresolved = notes.some((note) => note.resolvable && !note.resolved);
-    if (!isUnresolved) {
-      return false;
-    }
-    const iParticipate = isMyMr || notes.some((note) => note.author.id === me.id);
-    const lastNote = notes[notes.length - 1];
-    return iParticipate && lastNote.author.id !== me.id;
-  }).length;
-}
-
-function toItem(mr, extra) {
-  return {
-    key: mrKey(mr),
-    projectId: mr.project_id,
-    title: mr.title,
-    webUrl: mr.web_url,
-    reference: mr.references?.full ?? `!${mr.iid}`,
-    author: mr.author.username,
-    draft: isDraft(mr),
-    status: mr.detailed_merge_status ?? mr.merge_status,
-    hasConflicts: Boolean(mr.has_conflicts),
-    updatedAt: mr.updated_at,
-    ...extra,
-  };
-}
-
-const byUpdatedDesc = (a, b) => b.updatedAt.localeCompare(a.updatedAt);
-
-async function fetchAuthoredPipelines(client) {
+export async function fetchAuthoredPipelines(client) {
   const pipelines = new Map();
   let after = null;
   do {
@@ -221,7 +151,7 @@ export async function fetchPipelineFailures(client, { projectPath, id, sha }) {
     client.getAll(`${pipelinePath}/bridges`, { 'scope[]': 'failed' }),
     sha
       ? client
-          .getAll(`${projectApiPath}/repository/commits/${sha}/statuses`, { pipeline_id: id })
+          .getAll(`${projectApiPath}/repository/commits/${encodeURIComponent(sha)}/statuses`, { pipeline_id: id })
           .catch((error) => (error instanceof GitLabError ? [] : Promise.reject(error)))
       : [],
   ]);
@@ -262,147 +192,8 @@ export async function fetchMaintainedProjects(client) {
   return projects.filter(hasMergeRequests);
 }
 
-export const normalizeCheckName = (name) => name.trim().toLowerCase();
+export const fetchApprovals = (client, mr) =>
+  client.get(`/projects/${mr.project_id}/merge_requests/${mr.iid}/approvals`);
 
-function collectMentions(todos, excludedKeys) {
-  const todosByMr = new Map();
-  todos
-    .filter((todo) => MENTION_ACTIONS.has(todo.action_name) && todo.target?.state === 'opened')
-    .filter((todo) => !excludedKeys.has(mrKey(todo.target)))
-    .forEach((todo) => {
-      const key = mrKey(todo.target);
-      todosByMr.set(key, [...(todosByMr.get(key) ?? []), todo]);
-    });
-  return [...todosByMr.values()].map((mrTodos) => {
-    const latest = mrTodos.reduce((a, b) => (a.created_at > b.created_at ? a : b));
-    return toItem(latest.target, {
-      mentionedBy: [...new Set(mrTodos.map((todo) => todo.author.username))],
-      mentionCount: mrTodos.length,
-      mentionUrl: latest.target_url,
-      updatedAt: latest.created_at,
-    });
-  });
-}
-
-async function withPipelineFailures(client, item, pipeline, ignoredChecks) {
-  if (pipeline?.status !== 'failed') {
-    return { ...item, pipeline };
-  }
-  const failures = await fetchPipelineFailures(client, pipeline).catch((error) =>
-    error instanceof GitLabError ? null : Promise.reject(error),
-  );
-  const blockingFailures = failures?.filter((failure) => !ignoredChecks.has(normalizeCheckName(failure.name)));
-  return {
-    ...item,
-    pipeline: {
-      ...pipeline,
-      failures,
-      onlyIgnoredFailures: Boolean(failures?.length) && blockingFailures.length === 0,
-    },
-  };
-}
-
-export async function collectDashboard(client, { selectedProjectIds = null, ignoredCheckNames = [] } = {}) {
-  const me = await client.get('/user');
-
-  const [maintainedProjects, authoredMrs, reviewingMrs, authoredPipelines, todos] = await Promise.all([
-    fetchMaintainedProjects(client),
-    client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened' }),
-    client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
-    fetchAuthoredPipelines(client).catch((error) => {
-      if (error instanceof GitLabError) {
-        return null;
-      }
-      throw error;
-    }),
-    client
-      .getAll('/todos', { state: 'pending', type: 'MergeRequest' })
-      .catch((error) => (error instanceof GitLabError ? null : Promise.reject(error))),
-  ]);
-  const watchedIds = selectedProjectIds && new Set(selectedProjectIds);
-  const watchedProjects = watchedIds
-    ? maintainedProjects.filter((project) => watchedIds.has(project.id))
-    : maintainedProjects;
-
-  const maintainedMrLists = await mapLimit(watchedProjects, CONCURRENCY, (project) =>
-    orSkip(() =>
-      client.getAll(`/projects/${project.id}/merge_requests`, {
-        state: 'opened',
-        wip: 'no',
-        'not[author_id]': me.id,
-      }),
-    ),
-  );
-  const skippedProjects = maintainedMrLists.filter((list) => list === null).length;
-  const maintainedMrs = maintainedMrLists
-    .flatMap((list) => list ?? [])
-    .filter((mr) => !isDraft(mr) && mr.author.id !== me.id);
-
-  const reviewingKeys = new Set(reviewingMrs.map(mrKey));
-  const allMrs = uniqueBy([...authoredMrs, ...reviewingMrs, ...maintainedMrs], mrKey);
-
-  const details = await mapLimit(allMrs, CONCURRENCY, (mr) =>
-    orSkip(async () => {
-      const approvals = await fetchApprovals(client, mr);
-      const shouldCheckThreads = mr.author.id === me.id || reviewingKeys.has(mrKey(mr));
-      const threadsAwaitingReply = shouldCheckThreads ? await countThreadsAwaitingReply(client, mr, me) : 0;
-      return {
-        mr,
-        approvedByMe: Boolean(approvals.user_has_approved),
-        approvalsCount: approvals.approved_by?.length ?? 0,
-        threadsAwaitingReply,
-      };
-    }),
-  );
-  const skippedMrs = details.filter((detail) => detail === null).length;
-  const detailsByKey = new Map(details.filter(Boolean).map((detail) => [mrKey(detail.mr), detail]));
-  const toItems = (mrs) =>
-    mrs
-      .filter((mr) => detailsByKey.has(mrKey(mr)))
-      .map((mr) => {
-        const { approvedByMe, approvalsCount, threadsAwaitingReply } = detailsByKey.get(mrKey(mr));
-        return toItem(mr, { approvedByMe, approvalsCount, threadsAwaitingReply });
-      });
-
-  const reviewing = toItems(reviewingMrs.filter((mr) => mr.author.id !== me.id));
-  const mentioned = collectMentions(todos ?? [], new Set(reviewing.map((item) => item.key)));
-  const awaitingApproval = toItems(maintainedMrs.filter((mr) => !reviewingKeys.has(mrKey(mr)))).filter(
-    (item) => !item.approvedByMe,
-  );
-  const ignoredChecks = new Set(ignoredCheckNames.map(normalizeCheckName));
-  const authored = await mapLimit(toItems(authoredMrs), CONCURRENCY, (item) =>
-    withPipelineFailures(client, item, authoredPipelines?.get(item.reference) ?? null, ignoredChecks),
-  );
-  const threads = uniqueBy([...authored, ...reviewing], (item) => item.key).filter(
-    (item) => item.threadsAwaitingReply > 0,
-  );
-
-  return {
-    fetchedAt: new Date().toISOString(),
-    username: me.username,
-    watchedProjects: watchedProjects.length,
-    skippedProjects,
-    skippedMrs,
-    pipelinesUnavailable: authoredPipelines === null,
-    mentionsUnavailable: todos === null,
-    sections: {
-      reviewing: reviewing.sort(byUpdatedDesc),
-      mentioned: mentioned.sort(byUpdatedDesc),
-      awaitingApproval: awaitingApproval.sort(byUpdatedDesc),
-      threads: threads.sort(byUpdatedDesc),
-      authored: authored.sort(byUpdatedDesc),
-    },
-  };
-}
-
-export function countActionable(dashboard) {
-  const { reviewing, mentioned, awaitingApproval, threads, authored } = dashboard.sections;
-  const waiting = new Set([
-    ...mentioned.map((item) => item.key),
-    ...reviewing.filter((item) => !item.approvedByMe && !item.draft).map((item) => item.key),
-    ...awaitingApproval.map((item) => item.key),
-    ...threads.map((item) => item.key),
-  ]);
-  const failed = authored.filter((item) => item.pipeline?.status === 'failed' && !item.pipeline.onlyIgnoredFailures);
-  return { waiting: waiting.size, failedCi: failed.length };
-}
+export const fetchDiscussions = (client, mr) =>
+  client.getAll(`/projects/${mr.project_id}/merge_requests/${mr.iid}/discussions`);

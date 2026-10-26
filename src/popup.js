@@ -1,5 +1,7 @@
 import { DEFAULT_BASE_URL, STORAGE_KEYS, UPDATE_REPOSITORY, compareVersions } from './config.js';
 import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
+import { failureUrl, isHttpsUrl, isUnderBaseUrl } from './links.js';
+import { deriveView } from './view.js';
 
 const SECTIONS = [
   { id: 'reviewing', title: 'Меня назначили ревьюером', empty: 'Нет MR на ревью' },
@@ -89,8 +91,6 @@ function formatRelative(isoDate) {
   return `${Math.round(hours / 24)} д назад`;
 }
 
-const isUnderBaseUrl = (url, baseUrl) => typeof url === 'string' && url.startsWith(`${baseUrl}/`);
-
 const openUrl = (url) => chrome.tabs.create({ url });
 
 function describeFailure(failure) {
@@ -98,24 +98,10 @@ function describeFailure(failure) {
     return 'дочерний пайплайн';
   }
   if (failure.kind === 'external') {
-    return failure.reason || (isHttpUrl(failure.webUrl) ? new URL(failure.webUrl).hostname : 'внешняя проверка');
+    const host = isHttpsUrl(failure.webUrl) ? new URL(failure.webUrl).hostname : null;
+    return [failure.reason, host].filter(Boolean).join(' · ') || 'внешняя проверка';
   }
   return FAILURE_REASONS[failure.reason] ?? failure.reason ?? 'причина неизвестна';
-}
-
-function isHttpUrl(url) {
-  try {
-    return ['https:', 'http:'].includes(new URL(url).protocol);
-  } catch {
-    return false;
-  }
-}
-
-function failureUrl(failure, baseUrl) {
-  if (failure.kind === 'external') {
-    return isHttpUrl(failure.webUrl) ? failure.webUrl : null;
-  }
-  return isUnderBaseUrl(failure.webUrl, baseUrl) ? failure.webUrl : baseUrl;
 }
 
 async function loadPipelineFailures(item, baseUrl) {
@@ -281,19 +267,21 @@ function render(dashboard) {
   elements.error.hidden = !problem;
   elements.error.textContent = problem ?? '';
   const skipped = [
-    dashboard?.watchedProjects !== undefined ? ` · проектов для апрува: ${dashboard.watchedProjects}` : '',
+    dashboard?.watchedProjects !== undefined && !dashboard.projectsUnavailable
+      ? ` · проектов для апрува: ${dashboard.watchedProjects}`
+      : '',
     dashboard?.skippedProjects ? ` · пропущено проектов: ${dashboard.skippedProjects}` : '',
     dashboard?.skippedMrs ? ` · пропущено MR: ${dashboard.skippedMrs}` : '',
+    dashboard?.projectsUnavailable ? ' · проекты для апрува недоступны' : '',
     dashboard?.pipelinesUnavailable ? ' · статусы CI недоступны' : '',
     dashboard?.mentionsUnavailable ? ' · упоминания недоступны' : '',
   ].join('');
   elements.meta.textContent = dashboard?.fetchedAt
     ? `@${dashboard.username} · ${formatRelative(dashboard.fetchedAt)}${skipped}`
     : '';
+  const sections = dashboard?.sections && dashboard.baseUrl ? deriveView(dashboard).sections : null;
   elements.sections.replaceChildren(
-    ...(dashboard?.sections && dashboard.baseUrl
-      ? SECTIONS.map((section) => renderSection(section, dashboard.sections[section.id] ?? [], dashboard.baseUrl))
-      : []),
+    ...(sections ? SECTIONS.map((section) => renderSection(section, sections[section.id], dashboard.baseUrl)) : []),
   );
 }
 

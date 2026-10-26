@@ -48,7 +48,10 @@ Chrome-расширение (Manifest V3) для любого GitLab-инста�
 
 ## Как устроено
 
-- `src/gitlab.js` — REST API v4: список проектов с `min_access_level=40`, MR по проектам, `/approvals` и `/discussions` по каждому MR (discussions — только для моих MR и MR на ревью, где `user_notes_count > 0`). Используются только эндпоинты Free-тира.
+- `src/gitlab.js` — клиент GitLab (REST API v4 и GraphQL, ретраи на 429) и запросы к отдельным эндпоинтам. Используются только эндпоинты Free-тира.
+- `src/dashboard.js` — сбор дашборда конвейером: `fetchRaw` (пользователь, списки MR, проекты с `min_access_level=40`, todos, пайплайны) → `enrich` (`/approvals` и `/discussions` по каждому MR; discussions — только для моих MR и MR на ревью, где `user_notes_count > 0`; упавшие джобы) → `classify` (раскладка по секциям). Обязательные источники — пользователь и мои списки MR; если недоступны проекты, упоминания или статусы CI, дашборд собирается без них с пометкой в popup. Проект или MR, по которым GitLab вернул 403/404/5xx, пропускаются; если не ответил ни один и среди ошибок есть 5xx — обновление считается ошибкой, и popup остаётся с прошлыми данными. 401 и 429 всегда прерывают обновление.
+- `src/view.js` — `deriveView`: секции и счётчики бейджа из дашборда; одна функция для popup и бейджа.
+- `src/links.js` — проверка ссылок: GitLab-ссылки только внутри указанного инстанса, ссылки внешних CI — только https.
 - Упоминания — pending Todos (`GET /todos?state=pending&type=MergeRequest`, действия `mentioned` и `directly_addressed`), один запрос на обновление.
 - Статусы пайплайнов моих MR — одним GraphQL-запросом (`currentUser.authoredMergeRequests.headPipeline`). Для моих MR с упавшим пайплайном при обновлении загружаются упавшие джобы (`/pipelines/:id/jobs?scope[]=failed`, `/bridges`) и упавшие статусы внешних CI, например Jenkins (`/repository/commits/:sha/statuses?pipeline_id=`): это нужно для списка исключений и раскрывающегося блока в popup.
 - `src/background.js` — service worker: обновление по `chrome.alarms`, результат в `chrome.storage.local`, бейдж.
@@ -59,7 +62,17 @@ Chrome-расширение (Manifest V3) для любого GitLab-инста�
 
 - Доступ к хостам запрашивается в рантайме (`optional_host_permissions`) только для указанного GitLab; при смене URL доступ к старому хосту отзывается.
 - Токен хранится в `chrome.storage.local` (не синхронизируется между устройствами) и отправляется только в заголовке `PRIVATE-TOKEN` на указанный хост.
-- Popup строит DOM только через `textContent`, ссылки открываются только внутри указанного GitLab.
+- Popup строит DOM только через `textContent`, ссылки открываются только внутри указанного GitLab; ссылки внешних CI-проверок (их может задать любой разработчик проекта) — только https.
+
+## Разработка
+
+Тесты — встроенный раннер Node.js 20+, без зависимостей:
+
+```sh
+node --test
+```
+
+CI (`.github/workflows/ci.yml`) прогоняет тесты, проверяет `manifest.json` и собирает архив через `scripts/build.sh`.
 
 ## Обновление
 

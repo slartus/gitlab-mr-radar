@@ -10,7 +10,9 @@ import {
   compareVersions,
   hasHostPermission,
 } from './config.js';
-import { GitLabClient, collectDashboard, countActionable } from './gitlab.js';
+import { collectDashboard } from './dashboard.js';
+import { GitLabClient } from './gitlab.js';
+import { deriveView } from './view.js';
 
 const ALARM_NAME = 'refresh';
 const UPDATE_ALARM_NAME = 'update-check';
@@ -58,6 +60,9 @@ function describeError(error) {
   if (error.status === 429) {
     return 'GitLab ограничил частоту запросов — увеличьте интервал обновления';
   }
+  if (error.status >= 500) {
+    return 'GitLab временно недоступен — показаны данные последнего успешного обновления';
+  }
   if (error instanceof TypeError || error.name === 'TimeoutError') {
     return 'GitLab недоступен — проверьте сеть или VPN';
   }
@@ -84,11 +89,11 @@ async function performRefresh() {
       ignoredCheckNames,
     });
     dashboard.baseUrl = baseUrl;
-    if (isSelectedMode && dashboard.watchedProjects === 0) {
+    if (isSelectedMode && dashboard.watchedProjects === 0 && !dashboard.projectsUnavailable) {
       dashboard.warning = 'Ни один выбранный проект больше не доступен — обновите выбор в настройках';
     }
     await chrome.storage.local.set({ [STORAGE_KEYS.dashboard]: dashboard });
-    await showCounts(countActionable(dashboard));
+    await showCounts(deriveView(dashboard).counts);
   } catch (error) {
     await chrome.storage.local.set({
       [STORAGE_KEYS.dashboard]: { ...previous, error: describeError(error), failedAt: new Date().toISOString() },
