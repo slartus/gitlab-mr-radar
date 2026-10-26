@@ -161,3 +161,113 @@ li a:hover {
 .tag.bad {
   color: var(--danger);
 }
+
+.ci {
+  padding: 0 12px 6px;
+}
+
+.ci-toggle {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  border-radius: 4px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ci-toggle:hover {
+  background: var(--hover);
+}
+
+.ci-panel {
+  margin-top: 4px;
+  border-left: 2px solid var(--danger);
+  padding-left: 8px;
+}
+
+.ci-job {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  color: inherit;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.ci-job:hover .ci-job-name {
+  text-decoration: underline;
+}
+
+.ci-job-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ci-job-reason {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger);
+}
+
+.ci-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ci-note.bad {
+  color: var(--danger);
+}
+
+.ci-retry {
+  border: none;
+  background: none;
+  color: var(--accent);
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.ci.ignored .ci-panel {
+  border-left-color: var(--muted);
+}
+
+.ci.ignored .ci-job-reason {
+  color: var(--muted);
+}
+
+.ci-toggle.ignored {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.update {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+}
+
+.update[hidden] {
+  display: none;
+}
+
+.update a {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.update .muted {
+  margin-left: 0;
+}

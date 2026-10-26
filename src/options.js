@@ -5,9 +5,11 @@ import {
   MIN_INTERVAL_MINUTES,
   PROJECT_FILTER_MODES,
   STORAGE_KEYS,
+  UPDATE_CHECK_ORIGIN,
   hasHostPermission,
   hostPermissionPattern,
   normalizeBaseUrl,
+  parseCheckNames,
   requestHostPermission,
 } from './config.js';
 import { GitLabClient, fetchMaintainedProjects } from './gitlab.js';
@@ -16,6 +18,8 @@ const form = document.getElementById('form');
 const baseUrlInput = document.getElementById('base-url');
 const tokenInput = document.getElementById('token');
 const intervalInput = document.getElementById('interval');
+const ignoredChecksInput = document.getElementById('ignored-checks');
+const checkUpdatesInput = document.getElementById('check-updates');
 const status = document.getElementById('status');
 const tokenLink = document.getElementById('token-link');
 const modeInputs = [...document.querySelectorAll('input[name="project-mode"]')];
@@ -32,6 +36,9 @@ let savedBaseUrl = stored.baseUrl ?? DEFAULT_BASE_URL;
 baseUrlInput.value = savedBaseUrl;
 tokenInput.value = stored.token ?? '';
 intervalInput.value = String(stored.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES);
+ignoredChecksInput.value = (stored.ignoredCheckNames ?? []).join('\n');
+checkUpdatesInput.checked =
+  Boolean(stored.checkUpdates) && (await chrome.permissions.contains({ origins: [UPDATE_CHECK_ORIGIN] }));
 
 const selectedProjectIds = new Set(stored.selectedProjectIds ?? []);
 let selectionBaseUrl = savedBaseUrl;
@@ -285,6 +292,17 @@ document.getElementById('load-projects').addEventListener('click', async () => {
   loadedForKey = null;
   await loadProjects({ permissionGranted: true });
 });
+checkUpdatesInput.addEventListener('change', async () => {
+  if (!checkUpdatesInput.checked) {
+    await chrome.permissions.remove({ origins: [UPDATE_CHECK_ORIGIN] }).catch(() => false);
+    return;
+  }
+  const granted = await chrome.permissions.request({ origins: [UPDATE_CHECK_ORIGIN] });
+  if (!granted) {
+    checkUpdatesInput.checked = false;
+    status.textContent = 'Без доступа к api.github.com проверка обновлений не работает';
+  }
+});
 updateTokenLink();
 syncPickerVisibility();
 
@@ -328,6 +346,8 @@ form.addEventListener('submit', async (event) => {
       ),
       projectFilterMode,
       selectedProjectIds: [...selectedProjectIds],
+      ignoredCheckNames: parseCheckNames(ignoredChecksInput.value),
+      checkUpdates: checkUpdatesInput.checked,
     },
   });
   savedBaseUrl = baseUrl;

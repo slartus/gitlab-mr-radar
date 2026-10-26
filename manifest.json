@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GitLab MR Radar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Open GitLab merge requests waiting for your approval, review or reply",
   "permissions": [
     "storage",

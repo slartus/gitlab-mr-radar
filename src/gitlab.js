@@ -6,6 +6,21 @@ const MAX_RATE_LIMIT_RETRIES = 2;
 const MAX_RATE_LIMIT_WAIT_MS = 25_000;
 const SKIPPABLE_STATUSES = new Set([403, 404]);
 
+const AUTHORED_PIPELINES_QUERY = `
+  query AuthoredPipelines($after: String) {
+    currentUser {
+      authoredMergeRequests(state: opened, first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          iid
+          project { fullPath }
+          headPipeline { id sha status path project { fullPath } }
+        }
+      }
+    }
+  }
+`;
+
 export class GitLabError extends Error {
   constructor(status, message, path) {
     super(message);
@@ -18,7 +33,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class GitLabClient {
   constructor(baseUrl, token) {
+    this.baseUrl = baseUrl;
     this.apiUrl = `${baseUrl}/api/v4`;
+    this.graphqlUrl = `${baseUrl}/api/graphql`;
     this.token = token;
     this.pausedUntil = 0;
   }
@@ -26,10 +43,34 @@ export class GitLabClient {
   async request(path, params = {}) {
     const url = new URL(`${this.apiUrl}${path}`);
     Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)));
+    const response = await this.send(url, {}, path);
+    return {
+      data: await response.json(),
+      nextPage: response.headers.get('x-next-page'),
+    };
+  }
 
+  async graphql(query, variables = {}) {
+    const response = await this.send(
+      this.graphqlUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` },
+        body: JSON.stringify({ query, variables }),
+      },
+      '/graphql',
+    );
+    const { data, errors } = await response.json();
+    if (errors?.length) {
+      throw new GitLabError(response.status, `GraphQL: ${errors[0].message}`, '/graphql');
+    }
+    return data;
+  }
+
+  async send(url, init, path) {
     for (let attempt = 0; ; attempt++) {
       await this.waitForRateLimit(path);
-      const response = await this.fetchWithToken(url);
+      const response = await this.fetchWithToken(url, init);
       if (response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
         const retryAfterMs = (Number(response.headers.get('retry-after')) || 5) * 1000;
         this.pausedUntil = Math.max(this.pausedUntil, Date.now() + retryAfterMs);
@@ -38,10 +79,7 @@ export class GitLabClient {
       if (!response.ok) {
         throw new GitLabError(response.status, `${response.status} ${response.statusText}: ${path}`, path);
       }
-      return {
-        data: await response.json(),
-        nextPage: response.headers.get('x-next-page'),
-      };
+      return response;
     }
   }
 
@@ -55,9 +93,10 @@ export class GitLabClient {
     }
   }
 
-  fetchWithToken(url) {
+  fetchWithToken(url, { headers = {}, ...init } = {}) {
     return fetch(url, {
-      headers: { 'PRIVATE-TOKEN': this.token },
+      ...init,
+      headers: { 'PRIVATE-TOKEN': this.token, ...headers },
       credentials: 'omit',
       cache: 'no-store',
       redirect: 'error',
@@ -136,6 +175,7 @@ async function countThreadsAwaitingReply(client, mr, me) {
 function toItem(mr, extra) {
   return {
     key: mrKey(mr),
+    projectId: mr.project_id,
     title: mr.title,
     webUrl: mr.web_url,
     reference: mr.references?.full ?? `!${mr.iid}`,
@@ -150,6 +190,66 @@ function toItem(mr, extra) {
 
 const byUpdatedDesc = (a, b) => b.updatedAt.localeCompare(a.updatedAt);
 
+async function fetchAuthoredPipelines(client) {
+  const pipelines = new Map();
+  let after = null;
+  do {
+    const data = await client.graphql(AUTHORED_PIPELINES_QUERY, { after });
+    const connection = data.currentUser.authoredMergeRequests;
+    connection.nodes
+      .filter((node) => node.headPipeline)
+      .forEach(({ iid, project, headPipeline }) => {
+        pipelines.set(`${project.fullPath}!${iid}`, {
+          id: Number(headPipeline.id.split('/').pop()),
+          projectPath: headPipeline.project?.fullPath ?? project.fullPath,
+          sha: headPipeline.sha,
+          status: headPipeline.status.toLowerCase(),
+          webUrl: new URL(headPipeline.path, client.baseUrl).href,
+        });
+      });
+    after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  } while (after);
+  return pipelines;
+}
+
+export async function fetchPipelineFailures(client, { projectPath, id, sha }) {
+  const projectApiPath = `/projects/${encodeURIComponent(projectPath)}`;
+  const pipelinePath = `${projectApiPath}/pipelines/${id}`;
+  const [jobs, bridges, statuses] = await Promise.all([
+    client.getAll(`${pipelinePath}/jobs`, { 'scope[]': 'failed' }),
+    client.getAll(`${pipelinePath}/bridges`, { 'scope[]': 'failed' }),
+    sha
+      ? client
+          .getAll(`${projectApiPath}/repository/commits/${sha}/statuses`, { pipeline_id: id })
+          .catch((error) => (error instanceof GitLabError ? [] : Promise.reject(error)))
+      : [],
+  ]);
+  const isBlocking = (job) => !job.allow_failure;
+  const toFailure = (job, overrides) => ({
+    id: job.id,
+    name: job.name,
+    stage: job.stage,
+    reason: job.failure_reason,
+    webUrl: job.web_url,
+    kind: 'job',
+    ...overrides,
+  });
+  const gitlabJobIds = new Set([...jobs, ...bridges].map((job) => job.id));
+  return [
+    ...jobs.filter(isBlocking).map((job) => toFailure(job)),
+    ...bridges
+      .filter(isBlocking)
+      .map((bridge) =>
+        toFailure(bridge, { webUrl: bridge.downstream_pipeline?.web_url ?? bridge.web_url, kind: 'downstream' }),
+      ),
+    ...statuses
+      .filter((status) => status.status === 'failed' && isBlocking(status) && !gitlabJobIds.has(status.id))
+      .map((status) =>
+        toFailure(status, { reason: status.description, webUrl: status.target_url, kind: 'external' }),
+      ),
+  ];
+}
+
 export async function fetchMaintainedProjects(client) {
   const projects = await client.getAll('/projects', {
     membership: true,
@@ -161,13 +261,39 @@ export async function fetchMaintainedProjects(client) {
   return projects.filter(hasMergeRequests);
 }
 
-export async function collectDashboard(client, { selectedProjectIds = null } = {}) {
+export const normalizeCheckName = (name) => name.trim().toLowerCase();
+
+async function withPipelineFailures(client, item, pipeline, ignoredChecks) {
+  if (pipeline?.status !== 'failed') {
+    return { ...item, pipeline };
+  }
+  const failures = await fetchPipelineFailures(client, pipeline).catch((error) =>
+    error instanceof GitLabError ? null : Promise.reject(error),
+  );
+  const blockingFailures = failures?.filter((failure) => !ignoredChecks.has(normalizeCheckName(failure.name)));
+  return {
+    ...item,
+    pipeline: {
+      ...pipeline,
+      failures,
+      onlyIgnoredFailures: Boolean(failures?.length) && blockingFailures.length === 0,
+    },
+  };
+}
+
+export async function collectDashboard(client, { selectedProjectIds = null, ignoredCheckNames = [] } = {}) {
   const me = await client.get('/user');
 
-  const [maintainedProjects, authoredMrs, reviewingMrs] = await Promise.all([
+  const [maintainedProjects, authoredMrs, reviewingMrs, authoredPipelines] = await Promise.all([
     fetchMaintainedProjects(client),
     client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened' }),
     client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
+    fetchAuthoredPipelines(client).catch((error) => {
+      if (error instanceof GitLabError) {
+        return null;
+      }
+      throw error;
+    }),
   ]);
   const watchedIds = selectedProjectIds && new Set(selectedProjectIds);
   const watchedProjects = watchedIds
@@ -218,7 +344,10 @@ export async function collectDashboard(client, { selectedProjectIds = null } = {
   const awaitingApproval = toItems(maintainedMrs.filter((mr) => !reviewingKeys.has(mrKey(mr)))).filter(
     (item) => !item.approvedByMe,
   );
-  const authored = toItems(authoredMrs);
+  const ignoredChecks = new Set(ignoredCheckNames.map(normalizeCheckName));
+  const authored = await mapLimit(toItems(authoredMrs), CONCURRENCY, (item) =>
+    withPipelineFailures(client, item, authoredPipelines?.get(item.reference) ?? null, ignoredChecks),
+  );
   const threads = uniqueBy([...authored, ...reviewing], (item) => item.key).filter(
     (item) => item.threadsAwaitingReply > 0,
   );
@@ -229,6 +358,7 @@ export async function collectDashboard(client, { selectedProjectIds = null } = {
     watchedProjects: watchedProjects.length,
     skippedProjects,
     skippedMrs,
+    pipelinesUnavailable: authoredPipelines === null,
     sections: {
       reviewing: reviewing.sort(byUpdatedDesc),
       awaitingApproval: awaitingApproval.sort(byUpdatedDesc),
@@ -239,11 +369,12 @@ export async function collectDashboard(client, { selectedProjectIds = null } = {
 }
 
 export function countActionable(dashboard) {
-  const { reviewing, awaitingApproval, threads } = dashboard.sections;
-  const keys = new Set([
+  const { reviewing, awaitingApproval, threads, authored } = dashboard.sections;
+  const waiting = new Set([
     ...reviewing.filter((item) => !item.approvedByMe && !item.draft).map((item) => item.key),
     ...awaitingApproval.map((item) => item.key),
     ...threads.map((item) => item.key),
   ]);
-  return keys.size;
+  const failed = authored.filter((item) => item.pipeline?.status === 'failed' && !item.pipeline.onlyIgnoredFailures);
+  return { waiting: waiting.size, failedCi: failed.length };
 }

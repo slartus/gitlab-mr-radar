@@ -4,13 +4,19 @@ import {
   MIN_INTERVAL_MINUTES,
   PROJECT_FILTER_MODES,
   STORAGE_KEYS,
+  UPDATE_CHECK_INTERVAL_MINUTES,
+  UPDATE_CHECK_ORIGIN,
+  UPDATE_REPOSITORY,
+  compareVersions,
   hasHostPermission,
 } from './config.js';
 import { GitLabClient, collectDashboard, countActionable } from './gitlab.js';
 
 const ALARM_NAME = 'refresh';
+const UPDATE_ALARM_NAME = 'update-check';
 const BADGE_COLOR_OK = '#1f75cb';
 const BADGE_COLOR_ERROR = '#dd2b0e';
+const BADGE_TITLE = 'GitLab MR Radar';
 
 let inFlightRefresh = null;
 
@@ -22,13 +28,24 @@ async function loadSettings() {
     intervalMinutes: DEFAULT_INTERVAL_MINUTES,
     projectFilterMode: PROJECT_FILTER_MODES.all,
     selectedProjectIds: [],
+    ignoredCheckNames: [],
+    checkUpdates: false,
     ...stored[STORAGE_KEYS.settings],
   };
 }
 
-async function setBadge(text, color) {
+async function setBadge(text, color, title = BADGE_TITLE) {
   await chrome.action.setBadgeBackgroundColor({ color });
   await chrome.action.setBadgeText({ text });
+  await chrome.action.setTitle({ title });
+}
+
+async function showCounts({ waiting, failedCi }) {
+  const text = [waiting, failedCi]
+    .filter((count) => count > 0)
+    .join('·');
+  const title = `${BADGE_TITLE}\nЖдут действия: ${waiting}\nУпал CI: ${failedCi}`;
+  await setBadge(text, failedCi > 0 ? BADGE_COLOR_ERROR : BADGE_COLOR_OK, title);
 }
 
 function describeError(error) {
@@ -48,7 +65,7 @@ function describeError(error) {
 }
 
 async function performRefresh() {
-  const { baseUrl, token, projectFilterMode, selectedProjectIds } = await loadSettings();
+  const { baseUrl, token, projectFilterMode, selectedProjectIds, ignoredCheckNames } = await loadSettings();
   const setupError = !token
     ? 'Укажите токен в настройках'
     : !(await hasHostPermission(baseUrl))
@@ -64,20 +81,65 @@ async function performRefresh() {
     const isSelectedMode = projectFilterMode === PROJECT_FILTER_MODES.selected;
     const dashboard = await collectDashboard(new GitLabClient(baseUrl, token), {
       selectedProjectIds: isSelectedMode ? selectedProjectIds : null,
+      ignoredCheckNames,
     });
     dashboard.baseUrl = baseUrl;
     if (isSelectedMode && dashboard.watchedProjects === 0) {
       dashboard.warning = 'Ни один выбранный проект больше не доступен — обновите выбор в настройках';
     }
     await chrome.storage.local.set({ [STORAGE_KEYS.dashboard]: dashboard });
-    const count = countActionable(dashboard);
-    await setBadge(count > 0 ? String(count) : '', BADGE_COLOR_OK);
+    await showCounts(countActionable(dashboard));
   } catch (error) {
     await chrome.storage.local.set({
       [STORAGE_KEYS.dashboard]: { ...previous, error: describeError(error), failedAt: new Date().toISOString() },
     });
     await setBadge('!', BADGE_COLOR_ERROR);
   }
+}
+
+async function checkForUpdate() {
+  const { checkUpdates } = await loadSettings();
+  const permitted = checkUpdates && (await chrome.permissions.contains({ origins: [UPDATE_CHECK_ORIGIN] }));
+  if (!permitted) {
+    await chrome.storage.local.remove(STORAGE_KEYS.update);
+    return;
+  }
+  try {
+    const response = await fetch(`https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json' },
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) {
+      return;
+    }
+    const release = await response.json();
+    const currentVersion = chrome.runtime.getManifest().version;
+    const isNewer = compareVersions(release.tag_name, currentVersion) > 0;
+    const stillEnabled =
+      (await loadSettings()).checkUpdates && (await chrome.permissions.contains({ origins: [UPDATE_CHECK_ORIGIN] }));
+    if (!stillEnabled) {
+      return;
+    }
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.update]: isNewer
+        ? { version: release.tag_name.replace(/^v/, ''), url: release.html_url, checkedAt: new Date().toISOString() }
+        : null,
+    });
+  } catch (error) {
+    console.warn('Update check failed', error);
+  }
+}
+
+async function scheduleUpdateCheck() {
+  const { checkUpdates } = await loadSettings();
+  if (!checkUpdates) {
+    await chrome.alarms.clear(UPDATE_ALARM_NAME);
+    await chrome.storage.local.remove(STORAGE_KEYS.update);
+    return;
+  }
+  await chrome.alarms.create(UPDATE_ALARM_NAME, { delayInMinutes: 0, periodInMinutes: UPDATE_CHECK_INTERVAL_MINUTES });
 }
 
 function refresh() {
@@ -96,18 +158,30 @@ async function scheduleRefresh({ immediately }) {
   });
 }
 
-chrome.runtime.onInstalled.addListener(() => scheduleRefresh({ immediately: true }));
-chrome.runtime.onStartup.addListener(() => scheduleRefresh({ immediately: true }));
+chrome.runtime.onInstalled.addListener(() => {
+  scheduleRefresh({ immediately: true });
+  scheduleUpdateCheck();
+});
+chrome.runtime.onStartup.addListener(() => {
+  scheduleRefresh({ immediately: true });
+  scheduleUpdateCheck();
+});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
     refresh();
+  } else if (alarm.name === UPDATE_ALARM_NAME) {
+    checkForUpdate();
   }
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes[STORAGE_KEYS.settings]) {
     scheduleRefresh({ immediately: false });
+    const { oldValue, newValue } = changes[STORAGE_KEYS.settings];
+    if (Boolean(oldValue?.checkUpdates) !== Boolean(newValue?.checkUpdates)) {
+      scheduleUpdateCheck();
+    }
   }
 });
 

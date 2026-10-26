@@ -11,7 +11,28 @@ export const PROJECT_FILTER_MODES = {
 export const STORAGE_KEYS = {
   settings: 'settings',
   dashboard: 'dashboard',
+  update: 'update',
 };
+
+export const UPDATE_REPOSITORY = 'slartus/gitlab-mr-radar';
+export const UPDATE_CHECK_ORIGIN = 'https://api.github.com/*';
+export const UPDATE_CHECK_INTERVAL_MINUTES = 24 * 60;
+
+export function compareVersions(left, right) {
+  const parse = (version) => version.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const [a, b] = [parse(left), parse(right)];
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) {
+      return Math.sign(difference);
+    }
+  }
+  return 0;
+}
+
+export function parseCheckNames(text) {
+  return [...new Set(text.split(/[\n,]/).map((name) => name.trim()).filter(Boolean))];
+}
 
 export function normalizeBaseUrl(input) {
   const url = new URL(input.trim());
