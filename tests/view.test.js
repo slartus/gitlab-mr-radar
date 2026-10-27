@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from '../src/links.js';
-import { SECTION_IDS, deriveView, tokenProblems } from '../src/view.js';
+import { SECTION_IDS, deriveView, hasActivePipelines, tokenProblems } from '../src/view.js';
 
 const BASE_URL = 'https://gitlab.example.com';
 
@@ -34,6 +34,24 @@ describe('deriveView', () => {
     assert.deepEqual(Object.keys(sections), SECTION_IDS);
     assert.ok(Object.values(sections).every((items) => items.length === 0));
     assert.deepEqual(counts, { waiting: 0, failedCi: 0 });
+  });
+});
+
+describe('hasActivePipelines', () => {
+  const withAuthored = (...authored) => ({ sections: { authored } });
+
+  it('is true while one of my pipelines runs or GitLab rechecks the merge status', () => {
+    assert.equal(hasActivePipelines(withAuthored({ pipeline: { status: 'success' } }, { pipeline: { status: 'pending' } })), true);
+    assert.equal(hasActivePipelines(withAuthored({ status: 'ci_still_running', pipeline: null })), true);
+    assert.equal(hasActivePipelines(withAuthored({ status: 'checking', pipeline: null })), true);
+  });
+
+  it('is false when every pipeline has finished', () => {
+    assert.equal(
+      hasActivePipelines(withAuthored({ status: 'mergeable', pipeline: { status: 'success' } }, { pipeline: { status: 'failed' } })),
+      false,
+    );
+    assert.equal(hasActivePipelines({ error: 'x' }), false);
   });
 });
 

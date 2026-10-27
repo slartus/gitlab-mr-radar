@@ -24,6 +24,7 @@ const tokenInput = document.getElementById('token');
 const intervalInput = document.getElementById('interval');
 const ignoredChecksInput = document.getElementById('ignored-checks');
 const checkUpdatesInput = document.getElementById('check-updates');
+const fastRefreshInput = document.getElementById('fast-refresh');
 const notificationsInput = document.getElementById('notifications');
 const notificationDetailsInput = document.getElementById('notification-details');
 const notificationTypesList = document.getElementById('notification-types');
@@ -45,6 +46,7 @@ let savedBaseUrl = stored.baseUrl ?? DEFAULT_BASE_URL;
 baseUrlInput.value = savedBaseUrl;
 tokenInput.value = stored.token ?? '';
 intervalInput.value = String(stored.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES);
+fastRefreshInput.checked = stored.fastRefreshWhileCi ?? true;
 ignoredChecksInput.value = (stored.ignoredCheckNames ?? []).join('\n');
 checkUpdatesInput.checked =
   Boolean(stored.checkUpdates) && (await chrome.permissions.contains({ origins: [UPDATE_CHECK_ORIGIN] }));
@@ -387,6 +389,7 @@ form.addEventListener('submit', async (event) => {
         MAX_INTERVAL_MINUTES,
         Math.max(MIN_INTERVAL_MINUTES, Number(intervalInput.value) || DEFAULT_INTERVAL_MINUTES),
       ),
+      fastRefreshWhileCi: fastRefreshInput.checked,
       projectFilterMode,
       selectedProjectIds: [...selectedProjectIds],
       ignoredCheckNames: parseCheckNames(ignoredChecksInput.value),

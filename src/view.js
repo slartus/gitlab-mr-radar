@@ -23,7 +23,20 @@ const TRANSIENT_MERGE_STATUSES = new Set([
   'cannot_be_merged_recheck',
 ]);
 
+const READY_PIPELINE_STATUSES = new Set(['success', 'skipped']);
+const ACTIVE_PIPELINE_STATUSES = new Set([
+  'created',
+  'waiting_for_resource',
+  'preparing',
+  'pending',
+  'running',
+  'waiting_for_callback',
+  'canceling',
+]);
+
 const isMergeable = (item) => MERGEABLE_STATUSES.has(item.status) && !item.draft;
+const isReadyToMerge = (item) =>
+  isMergeable(item) && (!item.pipeline || READY_PIPELINE_STATUSES.has(item.pipeline.status));
 const isFailedPipeline = (item) => item.pipeline?.status === 'failed' && !item.pipeline.onlyIgnoredFailures;
 const awaitsMyReview = (item) => !item.approvedByMe && !item.draft;
 
@@ -90,8 +103,9 @@ const NOTIFICATION_RULES = [
   {
     type: 'mergeable',
     section: 'authored',
-    applies: isMergeable,
-    isNew: (item, prev) => Boolean(prev) && !isMergeable(prev),
+    sources: ['pipelinesUnavailable'],
+    applies: isReadyToMerge,
+    isNew: (item, prev) => Boolean(prev) && !isReadyToMerge(prev),
   },
   {
     type: 'branchBroken',
@@ -111,6 +125,14 @@ const sameSource = (previous, next) =>
   previous.baseUrl === next.baseUrl &&
   previous.username === next.username &&
   JSON.stringify(previous.filters ?? null) === JSON.stringify(next.filters ?? null);
+
+export const hasActivePipelines = (dashboard) =>
+  (dashboard.sections?.authored ?? []).some(
+    (item) =>
+      ACTIVE_PIPELINE_STATUSES.has(item.pipeline?.status) ||
+      item.status === 'ci_still_running' ||
+      TRANSIENT_MERGE_STATUSES.has(item.status),
+  );
 
 export function withStableStatuses(previous, next) {
   if (!previous?.sections || !next.sections || !sameSource(previous, next)) {

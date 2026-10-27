@@ -1,7 +1,6 @@
 import {
   DEFAULT_BASE_URL,
   DEFAULT_INTERVAL_MINUTES,
-  MIN_INTERVAL_MINUTES,
   PROJECT_FILTER_MODES,
   STORAGE_KEYS,
   UPDATE_CHECK_INTERVAL_MINUTES,
@@ -11,13 +10,15 @@ import {
   hasHostPermission,
   hasNotificationsPermission,
   notificationTargetKey,
+  refreshDelayMinutes,
+  refreshPeriodMinutes,
 } from './config.js';
 import { collectDashboard } from './dashboard.js';
 import { GitLabClient } from './gitlab.js';
 import { isUnderBaseUrl } from './links.js';
 import { enabledEvents, formatNotification, notificationTarget } from './notifications.js';
 import { nextSnoozeExpiry } from './snooze.js';
-import { collectNotificationEvents, deriveView, withStableStatuses } from './view.js';
+import { collectNotificationEvents, deriveView, hasActivePipelines, withStableStatuses } from './view.js';
 
 const ALARM_NAME = 'refresh';
 const UPDATE_ALARM_NAME = 'update-check';
@@ -25,6 +26,7 @@ const SNOOZE_ALARM_NAME = 'snooze-expiry';
 const BADGE_COLOR_OK = '#1f75cb';
 const BADGE_COLOR_ERROR = '#dd2b0e';
 const BADGE_TITLE = 'GitLab MR Radar';
+const FAST_REFRESH_SINCE_KEY = 'fastRefreshSince';
 
 let inFlightRefresh = null;
 let queuedRefresh = null;
@@ -41,6 +43,7 @@ async function loadSettings() {
     ignoredCheckNames: [],
     approvalThreshold: 0,
     mutedNotificationTypes: [],
+    fastRefreshWhileCi: true,
     checkUpdates: false,
     notifications: false,
     notificationDetails: false,
@@ -222,6 +225,7 @@ async function performRefresh() {
     await scheduleSnoozeExpiry(userState);
     await showCounts(deriveView(dashboard, userState).counts);
     await notifyChanges(previous, dashboard, userState, settings).catch(console.error);
+    await scheduleRefresh({ fast: hasActivePipelines(collected) }).catch(console.error);
   } catch (error) {
     if (await isStale()) {
       return;
@@ -292,12 +296,26 @@ function refresh({ afterCurrent = false } = {}) {
   return inFlightRefresh;
 }
 
-async function scheduleRefresh({ immediately }) {
-  const { intervalMinutes } = await loadSettings();
-  const periodInMinutes = Math.max(MIN_INTERVAL_MINUTES, Number(intervalMinutes) || DEFAULT_INTERVAL_MINUTES);
+async function trackFastRefresh(fast) {
+  if (!fast) {
+    await chrome.storage.session.remove(FAST_REFRESH_SINCE_KEY);
+    return null;
+  }
+  const { [FAST_REFRESH_SINCE_KEY]: since } = await chrome.storage.session.get(FAST_REFRESH_SINCE_KEY);
+  if (since) {
+    return since;
+  }
+  const now = Date.now();
+  await chrome.storage.session.set({ [FAST_REFRESH_SINCE_KEY]: now });
+  return now;
+}
+
+async function scheduleRefresh({ immediately = false, fast = null } = {}) {
+  const { intervalMinutes, fastRefreshWhileCi } = await loadSettings();
+  const fastSince = fast === null ? null : await trackFastRefresh(fast && fastRefreshWhileCi);
   await chrome.alarms.create(ALARM_NAME, {
-    delayInMinutes: immediately ? 0 : periodInMinutes,
-    periodInMinutes,
+    delayInMinutes: refreshDelayMinutes({ immediately, fastSince, intervalMinutes }),
+    periodInMinutes: refreshPeriodMinutes(intervalMinutes),
   });
 }
 

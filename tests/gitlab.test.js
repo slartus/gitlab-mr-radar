@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 
-import { compareVersions, normalizeBaseUrl, parseCheckNames } from '../src/config.js';
+import { compareVersions, normalizeBaseUrl, parseCheckNames, refreshDelayMinutes } from '../src/config.js';
 import {
   GitLabClient,
   GitLabError,
@@ -68,6 +68,22 @@ describe('GitLabClient', () => {
     const client = new GitLabClient(BASE_URL, 't');
     assert.deepEqual(await client.graphqlPartial('{ x }'), body);
     await assert.rejects(client.graphql('{ x }'), /GraphQL: boom/);
+  });
+});
+
+describe('refreshDelayMinutes', () => {
+  const NOW = Date.parse('2026-03-10T15:00:00Z');
+
+  it('waits one minute while fast refresh is on and the full interval otherwise', () => {
+    assert.equal(refreshDelayMinutes({ intervalMinutes: 15, now: NOW }), 15);
+    assert.equal(refreshDelayMinutes({ intervalMinutes: 15, fastSince: NOW - 60_000, now: NOW }), 1);
+    assert.equal(refreshDelayMinutes({ intervalMinutes: 15, fastSince: NOW, immediately: true, now: NOW }), 0);
+    assert.equal(refreshDelayMinutes({ intervalMinutes: undefined, now: NOW }), 5);
+  });
+
+  it('falls back to the interval after an hour of fast refresh', () => {
+    assert.equal(refreshDelayMinutes({ intervalMinutes: 15, fastSince: NOW - 59 * 60_000, now: NOW }), 1);
+    assert.equal(refreshDelayMinutes({ intervalMinutes: 15, fastSince: NOW - 60 * 60_000, now: NOW }), 15);
   });
 });
 

@@ -1,6 +1,8 @@
 export const DEFAULT_BASE_URL = 'https://gitlab.com';
 export const DEFAULT_INTERVAL_MINUTES = 5;
 export const MIN_INTERVAL_MINUTES = 1;
+export const FAST_REFRESH_MINUTES = 1;
+export const MAX_FAST_REFRESH_MINUTES = 60;
 export const MAX_INTERVAL_MINUTES = 120;
 export const MAX_APPROVAL_THRESHOLD = 20;
 
@@ -27,6 +29,19 @@ export const hasNotificationsPermission = () =>
 export const UPDATE_REPOSITORY = 'slartus/gitlab-mr-radar';
 export const UPDATE_CHECK_ORIGIN = 'https://api.github.com/*';
 export const UPDATE_CHECK_INTERVAL_MINUTES = 24 * 60;
+
+export function refreshPeriodMinutes(intervalMinutes) {
+  return Math.max(MIN_INTERVAL_MINUTES, Number(intervalMinutes) || DEFAULT_INTERVAL_MINUTES);
+}
+
+export function refreshDelayMinutes({ immediately = false, fastSince = null, intervalMinutes, now = Date.now() }) {
+  const periodInMinutes = refreshPeriodMinutes(intervalMinutes);
+  if (immediately) {
+    return 0;
+  }
+  const isFast = fastSince !== null && now - fastSince < MAX_FAST_REFRESH_MINUTES * 60_000;
+  return isFast ? Math.min(FAST_REFRESH_MINUTES, periodInMinutes) : periodInMinutes;
+}
 
 export function compareVersions(left, right) {
   const parse = (version) => version.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10) || 0);

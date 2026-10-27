@@ -119,6 +119,29 @@ describe('collectNotificationEvents', () => {
     ]);
   });
 
+  it('reports a mergeable MR only once its pipeline has passed', () => {
+    const pipeline = (status) => ({ status, id: 1 });
+    const running = dashboard({
+      authored: [
+        mrItem('1', { status: 'not_approved', pipeline: pipeline('running') }),
+        mrItem('2', { status: 'mergeable', pipeline: pipeline('running') }),
+        mrItem('3', { status: 'mergeable', pipeline: pipeline('running') }),
+      ],
+    });
+    const mergeableRunning = dashboard({
+      authored: [
+        mrItem('1', { status: 'mergeable', pipeline: pipeline('running') }),
+        mrItem('2', { status: 'mergeable', pipeline: pipeline('success') }),
+        mrItem('3', { status: 'mergeable', pipeline: pipeline('canceled') }),
+      ],
+    });
+    assert.deepEqual(changes(running, mergeableRunning), ['mergeable:2']);
+    const passed = dashboard({ authored: [mrItem('1', { status: 'mergeable', pipeline: pipeline('success') })] });
+    assert.deepEqual(changes(mergeableRunning, passed), ['mergeable:1']);
+    assert.deepEqual(changes({ ...mergeableRunning, pipelinesUnavailable: true }, passed), []);
+    assert.deepEqual(changes(mergeableRunning, { ...passed, pipelinesUnavailable: true }), []);
+  });
+
   it('treats the legacy can_be_merged status as mergeable', () => {
     const previous = dashboard({ authored: [mrItem('1', { status: 'not_approved' })] });
     const next = dashboard({ authored: [mrItem('1', { status: 'can_be_merged' })] });
