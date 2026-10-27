@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { formatNotification, notificationTarget } from '../src/notifications.js';
+import { NOTIFICATION_TYPES, enabledEvents, formatNotification, notificationTarget } from '../src/notifications.js';
 import { SECTION_IDS, collectNotificationEvents, withStableStatuses } from '../src/view.js';
 
 const BASE_URL = 'https://gitlab.example.com';
@@ -214,6 +214,33 @@ describe('collectNotificationEvents', () => {
     assert.deepEqual(changes(dashboard({}, { username: 'other' }), next), []);
     assert.deepEqual(changes(dashboard({}, { baseUrl: 'https://other.example.com' }), next), []);
     assert.deepEqual(changes(dashboard({}, { filters: { selectedProjectIds: [1] } }), next), []);
+  });
+
+  it('stays silent when the approval threshold changes and reports as usual while it stays the same', () => {
+    const filters = (approvalThreshold) => ({ selectedProjectIds: null, ignoredCheckNames: [], approvalThreshold });
+    const next = dashboard({ awaitingApproval: [mrItem('1')] }, { filters: filters(2) });
+    assert.deepEqual(changes(dashboard({}, { filters: { selectedProjectIds: null, ignoredCheckNames: [] } }), next), []);
+    assert.deepEqual(changes(dashboard({}, { filters: filters(0) }), next), []);
+    assert.deepEqual(changes(dashboard({}, { filters: filters(2) }), next), ['approval:1']);
+  });
+});
+
+describe('enabledEvents', () => {
+  it('drops events of muted types', () => {
+    const events = [
+      { type: 'review', item: mrItem('1') },
+      { type: 'approval', item: mrItem('2') },
+      { type: 'ciFailed', item: mrItem('3') },
+    ];
+    assert.deepEqual(eventsOf(enabledEvents(events, ['approval', 'ciFailed'])), ['review:1']);
+    assert.deepEqual(eventsOf(enabledEvents(events)), ['review:1', 'approval:2', 'ciFailed:3']);
+  });
+
+  it('offers every event type in settings', () => {
+    assert.deepEqual(
+      NOTIFICATION_TYPES.map(({ type }) => type),
+      ['review', 'assigned', 'mention', 'approval', 'thread', 'ciFailed', 'mergeable', 'branchBroken'],
+    );
   });
 });
 

@@ -28,6 +28,8 @@
     .children { margin-left: 22px; }
     .children > .project-row { margin-left: 24px; }
     #status { margin-left: 10px; }
+    .field-title { margin-top: 16px; font-weight: 600; }
+    .types label.checkbox { margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -70,10 +72,17 @@
         Показывать названия MR и задач в уведомлениях
       </label>
       <div class="hint">Уведомления видны на заблокированном экране и при демонстрации экрана — без этой галки показываются только счётчики. Об отложенных MR уведомлений нет.</div>
+      <div class="field-title">Уведомлять о событиях</div>
+      <div id="notification-types" class="types"></div>
     </fieldset>
     <fieldset>
-      <legend>Проекты для «Ждут моего апрува»</legend>
+      <legend>Фильтры для «Ждут моего апрува»</legend>
       <div class="hint">MR, где вы ревьюер или автор, показываются из всех проектов.</div>
+      <label class="field">
+        Не показывать MR, у которых апрувов не меньше
+        <div class="hint">0 — показывать все MR без моего апрува. Например, 2 — MR, которые уже апрувнули двое, в секцию и счётчик не попадают.</div>
+        <input id="approval-threshold" type="number" min="0" required>
+      </label>
       <div class="modes">
         <label><input type="radio" name="project-mode" value="all"> Все проекты, где я Maintainer+</label>
         <label><input type="radio" name="project-mode" value="selected"> Только выбранные (новые проекты не добавляются автоматически)</label>

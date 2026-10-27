@@ -15,7 +15,7 @@ import {
 import { collectDashboard } from './dashboard.js';
 import { GitLabClient } from './gitlab.js';
 import { isUnderBaseUrl } from './links.js';
-import { formatNotification, notificationTarget } from './notifications.js';
+import { enabledEvents, formatNotification, notificationTarget } from './notifications.js';
 import { nextSnoozeExpiry } from './snooze.js';
 import { collectNotificationEvents, deriveView, withStableStatuses } from './view.js';
 
@@ -39,6 +39,8 @@ async function loadSettings() {
     projectFilterMode: PROJECT_FILTER_MODES.all,
     selectedProjectIds: [],
     ignoredCheckNames: [],
+    approvalThreshold: 0,
+    mutedNotificationTypes: [],
     checkUpdates: false,
     notifications: false,
     notificationDetails: false,
@@ -87,7 +89,10 @@ async function notifyChanges(previous, dashboard, userState, settings) {
   if (!settings.notifications || !(await hasNotificationsPermission())) {
     return;
   }
-  const events = collectNotificationEvents(previous, dashboard, userState);
+  const events = enabledEvents(
+    collectNotificationEvents(previous, dashboard, userState),
+    settings.mutedNotificationTypes,
+  );
   if (events.length === 0) {
     return;
   }
@@ -169,7 +174,7 @@ async function showCountsFromStorage() {
 
 async function performRefresh() {
   const settings = await loadSettings();
-  const { baseUrl, token, projectFilterMode, selectedProjectIds, ignoredCheckNames } = settings;
+  const { baseUrl, token, projectFilterMode, selectedProjectIds, ignoredCheckNames, approvalThreshold } = settings;
   const setupError = !token
     ? 'Укажите токен в настройках'
     : !(await hasHostPermission(baseUrl))
@@ -191,6 +196,7 @@ async function performRefresh() {
     const { threadCache, ...collected } = await collectDashboard(new GitLabClient(baseUrl, token), {
       selectedProjectIds: isSelectedMode ? selectedProjectIds : null,
       ignoredCheckNames,
+      approvalThreshold,
       threadCache: storedCache?.baseUrl === baseUrl ? storedCache : null,
     });
     if (await isStale()) {
@@ -202,6 +208,7 @@ async function performRefresh() {
       filters: {
         selectedProjectIds: isSelectedMode ? [...selectedProjectIds].sort((a, b) => a - b) : null,
         ignoredCheckNames: [...ignoredCheckNames].sort(),
+        approvalThreshold,
       },
     });
     if (isSelectedMode && dashboard.watchedProjects === 0 && !dashboard.projectsUnavailable) {

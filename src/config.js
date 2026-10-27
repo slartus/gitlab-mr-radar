@@ -2,6 +2,7 @@ export const DEFAULT_BASE_URL = 'https://gitlab.com';
 export const DEFAULT_INTERVAL_MINUTES = 5;
 export const MIN_INTERVAL_MINUTES = 1;
 export const MAX_INTERVAL_MINUTES = 120;
+export const MAX_APPROVAL_THRESHOLD = 20;
 
 export const PROJECT_FILTER_MODES = {
   all: 'all',

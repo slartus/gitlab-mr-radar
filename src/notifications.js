@@ -13,6 +13,10 @@ const EVENT_LABELS = {
   branchBroken: { title: 'Сломан default branch', counted: (count) => `сломан default branch: ${count}` },
 };
 
+export const NOTIFICATION_TYPES = Object.entries(EVENT_LABELS).map(([type, { title }]) => ({ type, title }));
+
+export const enabledEvents = (events, mutedTypes = []) => events.filter(({ type }) => !mutedTypes.includes(type));
+
 export const uniqueEventItems = (events) => [...new Map(events.map(({ item }) => [item.key, item])).values()];
 
 export function notificationTarget(events, baseUrl) {

@@ -335,7 +335,11 @@ export async function enrich(client, raw, threadCache = null) {
   };
 }
 
-export function classify(raw, { details, pipelineFailures }, ignoredCheckNames = []) {
+export function classify(
+  raw,
+  { details, pipelineFailures },
+  { ignoredCheckNames = [], approvalThreshold = 0 } = {},
+) {
   const { me, authoredMrs, reviewingMrs, assignedMrs, maintainedMrs, todos } = raw;
   const reviewingKeys = new Set(reviewingMrs.map(mrKey));
   const toItems = (mrs) =>
@@ -351,7 +355,7 @@ export function classify(raw, { details, pipelineFailures }, ignoredCheckNames =
   const personalKeys = new Set([...reviewing, ...assigned].map((item) => item.key));
   const mentioned = collectMentions(todos ?? [], personalKeys);
   const awaitingApproval = toItems(maintainedMrs.filter((mr) => !personalKeys.has(mrKey(mr)))).filter(
-    (item) => !item.approvedByMe,
+    (item) => !item.approvedByMe && !(approvalThreshold > 0 && item.approvalsCount >= approvalThreshold),
   );
   const ignoredChecks = new Set(ignoredCheckNames.map(normalizeCheckName));
   const authored = toItems(authoredMrs).map((item) => ({
@@ -379,7 +383,7 @@ export function classify(raw, { details, pipelineFailures }, ignoredCheckNames =
 
 export async function collectDashboard(
   client,
-  { selectedProjectIds = null, ignoredCheckNames = [], threadCache = null } = {},
+  { selectedProjectIds = null, ignoredCheckNames = [], approvalThreshold = 0, threadCache = null } = {},
 ) {
   const raw = await fetchRaw(client, { selectedProjectIds });
   const enriched = await enrich(client, raw, threadCache);
@@ -395,7 +399,7 @@ export async function collectDashboard(
     assignedUnavailable: raw.assignedUnavailable,
     defaultBranchesUnavailable: raw.defaultBranchesUnavailable,
     token: raw.token,
-    sections: classify(raw, enriched, ignoredCheckNames),
+    sections: classify(raw, enriched, { ignoredCheckNames, approvalThreshold }),
     threadCache: enriched.threadCache,
   };
 }

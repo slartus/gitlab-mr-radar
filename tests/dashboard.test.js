@@ -121,6 +121,26 @@ describe('collectDashboard', () => {
     assert.ok(!client.calls.some((call) => call.path === '/projects/10/merge_requests/3/discussions'));
   });
 
+  it('hides MRs awaiting my approval once they have enough approvals from others', async () => {
+    const client = (approvalThreshold) => [
+      new FakeClient({
+        ...emptyDashboardRoutes(),
+        '/projects': [{ id: 10 }],
+        '/projects/10/merge_requests': [mr({ iid: 1, author: BOB }), mr({ iid: 2, author: BOB }), mr({ iid: 3, author: BOB })],
+        '/projects/10/merge_requests/1/approvals': approvals(),
+        '/projects/10/merge_requests/2/approvals': approvals([ALICE]),
+        '/projects/10/merge_requests/3/approvals': approvals([ALICE, BOB]),
+      }),
+      { approvalThreshold },
+    ];
+    const keys = async (threshold) =>
+      (await collectDashboard(...client(threshold))).sections.awaitingApproval.map((item) => item.key);
+
+    assert.deepEqual(await keys(0), ['10!1', '10!2', '10!3']);
+    assert.deepEqual(await keys(2), ['10!1', '10!2']);
+    assert.deepEqual(await keys(1), ['10!1']);
+  });
+
   it('keeps the dashboard when optional sources fail', async () => {
     const client = new FakeClient({
       ...emptyDashboardRoutes(),

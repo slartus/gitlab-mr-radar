@@ -1,6 +1,7 @@
 import {
   DEFAULT_BASE_URL,
   DEFAULT_INTERVAL_MINUTES,
+  MAX_APPROVAL_THRESHOLD,
   MAX_INTERVAL_MINUTES,
   MIN_INTERVAL_MINUTES,
   NOTIFICATIONS_PERMISSION,
@@ -15,6 +16,7 @@ import {
   requestHostPermission,
 } from './config.js';
 import { GitLabClient, fetchMaintainedProjects } from './gitlab.js';
+import { NOTIFICATION_TYPES } from './notifications.js';
 
 const form = document.getElementById('form');
 const baseUrlInput = document.getElementById('base-url');
@@ -24,6 +26,8 @@ const ignoredChecksInput = document.getElementById('ignored-checks');
 const checkUpdatesInput = document.getElementById('check-updates');
 const notificationsInput = document.getElementById('notifications');
 const notificationDetailsInput = document.getElementById('notification-details');
+const notificationTypesList = document.getElementById('notification-types');
+const approvalThresholdInput = document.getElementById('approval-threshold');
 const status = document.getElementById('status');
 const tokenLink = document.getElementById('token-link');
 const modeInputs = [...document.querySelectorAll('input[name="project-mode"]')];
@@ -34,6 +38,7 @@ const projectCounter = document.getElementById('project-counter');
 
 intervalInput.min = String(MIN_INTERVAL_MINUTES);
 intervalInput.max = String(MAX_INTERVAL_MINUTES);
+approvalThresholdInput.max = String(MAX_APPROVAL_THRESHOLD);
 
 const stored = (await chrome.storage.local.get(STORAGE_KEYS.settings))[STORAGE_KEYS.settings] ?? {};
 let savedBaseUrl = stored.baseUrl ?? DEFAULT_BASE_URL;
@@ -45,6 +50,25 @@ checkUpdatesInput.checked =
   Boolean(stored.checkUpdates) && (await chrome.permissions.contains({ origins: [UPDATE_CHECK_ORIGIN] }));
 notificationsInput.checked = Boolean(stored.notifications) && (await hasNotificationsPermission());
 notificationDetailsInput.checked = Boolean(stored.notificationDetails);
+approvalThresholdInput.value = String(stored.approvalThreshold ?? 0);
+
+const mutedNotificationTypes = new Set(stored.mutedNotificationTypes ?? []);
+const notificationTypeInputs = NOTIFICATION_TYPES.map(({ type, title }) => {
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = !mutedNotificationTypes.has(type);
+  checkbox.dataset.type = type;
+  const label = document.createElement('label');
+  label.className = 'checkbox';
+  label.append(checkbox, title);
+  notificationTypesList.append(label);
+  return checkbox;
+});
+const syncNotificationTypes = () =>
+  notificationTypeInputs.forEach((checkbox) => {
+    checkbox.disabled = !notificationsInput.checked;
+  });
+syncNotificationTypes();
 
 const selectedProjectIds = new Set(stored.selectedProjectIds ?? []);
 let selectionBaseUrl = savedBaseUrl;
@@ -310,6 +334,7 @@ checkUpdatesInput.addEventListener('change', async () => {
   }
 });
 notificationsInput.addEventListener('change', async () => {
+  syncNotificationTypes();
   if (!notificationsInput.checked) {
     await chrome.permissions.remove({ permissions: [NOTIFICATIONS_PERMISSION] }).catch(() => false);
     return;
@@ -317,6 +342,7 @@ notificationsInput.addEventListener('change', async () => {
   const granted = await chrome.permissions.request({ permissions: [NOTIFICATIONS_PERMISSION] });
   if (!granted) {
     notificationsInput.checked = false;
+    syncNotificationTypes();
     status.textContent = 'Без разрешения браузера уведомления не работают';
   }
 });
@@ -367,6 +393,13 @@ form.addEventListener('submit', async (event) => {
       checkUpdates: checkUpdatesInput.checked,
       notifications: notificationsInput.checked,
       notificationDetails: notificationDetailsInput.checked,
+      mutedNotificationTypes: notificationTypeInputs
+        .filter((checkbox) => !checkbox.checked)
+        .map((checkbox) => checkbox.dataset.type),
+      approvalThreshold: Math.min(
+        MAX_APPROVAL_THRESHOLD,
+        Math.max(0, Math.trunc(Number(approvalThresholdInput.value) || 0)),
+      ),
     },
   });
   savedBaseUrl = baseUrl;
