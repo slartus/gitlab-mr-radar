@@ -43,8 +43,10 @@ describe('GitLabClient', () => {
       attempt++ === 0 ? jsonResponse({}, { status: 429, headers: { 'retry-after': '0.01' } }) : jsonResponse({ id: 1 }),
     );
 
-    assert.deepEqual(await new GitLabClient(BASE_URL, 't').get('/user'), { id: 1 });
+    const client = new GitLabClient(BASE_URL, 't');
+    assert.deepEqual(await client.get('/user'), { id: 1 });
     assert.equal(attempt, 2);
+    assert.equal(client.requestCount, 2);
   });
 
   it('throws GitLabError with status and path', async () => {

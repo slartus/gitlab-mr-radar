@@ -461,6 +461,9 @@ function render(dashboard, userState) {
   elements.meta.textContent = dashboard?.fetchedAt
     ? `@${dashboard.username} · ${formatRelative(dashboard.fetchedAt)}${skipped}`
     : '';
+  elements.meta.title = dashboard?.stats
+    ? `Последнее успешное обновление: запросов к GitLab — ${dashboard.stats.requests}, ${(dashboard.stats.durationMs / 1000).toFixed(1)} с`
+    : '';
   if (!dashboard?.sections || !dashboard.baseUrl) {
     elements.sections.replaceChildren();
     return;

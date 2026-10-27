@@ -70,6 +70,7 @@ export class GitLabClient {
     this.graphqlUrl = `${baseUrl}/api/graphql`;
     this.token = token;
     this.pausedUntil = 0;
+    this.requestCount = 0;
   }
 
   async request(path, params = {}) {
@@ -110,6 +111,7 @@ export class GitLabClient {
   async send(url, init, path) {
     for (let attempt = 0; ; attempt++) {
       await this.waitForRateLimit(path);
+      this.requestCount++;
       const response = await this.fetchWithToken(url, init);
       if (response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
         const retryAfterMs = (Number(response.headers.get('retry-after')) || 5) * 1000;

@@ -229,7 +229,9 @@ async function performRefresh() {
   try {
     const isSelectedMode = projectFilterMode === PROJECT_FILTER_MODES.selected;
     const storedCache = (await chrome.storage.local.get(STORAGE_KEYS.threadCache))[STORAGE_KEYS.threadCache];
-    const { threadCache, ...collected } = await collectDashboard(new GitLabClient(baseUrl, token), {
+    const client = new GitLabClient(baseUrl, token);
+    const startedAt = Date.now();
+    const { threadCache, ...collected } = await collectDashboard(client, {
       selectedProjectIds: isSelectedMode ? selectedProjectIds : null,
       ignoredCheckNames,
       approvalThreshold,
@@ -240,6 +242,7 @@ async function performRefresh() {
     }
     const dashboard = withStableStatuses(previous, {
       ...collected,
+      stats: { requests: client.requestCount, durationMs: Date.now() - startedAt },
       baseUrl,
       filters: {
         selectedProjectIds: isSelectedMode ? [...selectedProjectIds].sort((a, b) => a - b) : null,
