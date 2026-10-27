@@ -17,7 +17,7 @@ import { GitLabClient } from './gitlab.js';
 import { isUnderBaseUrl } from './links.js';
 import { formatNotification, notificationTarget } from './notifications.js';
 import { nextSnoozeExpiry } from './snooze.js';
-import { collectNotificationEvents, deriveView } from './view.js';
+import { collectNotificationEvents, deriveView, withStableStatuses } from './view.js';
 
 const ALARM_NAME = 'refresh';
 const UPDATE_ALARM_NAME = 'update-check';
@@ -27,6 +27,7 @@ const BADGE_COLOR_ERROR = '#dd2b0e';
 const BADGE_TITLE = 'GitLab MR Radar';
 
 let inFlightRefresh = null;
+let queuedRefresh = null;
 let notificationListenerRegistered = false;
 
 async function loadSettings() {
@@ -180,19 +181,29 @@ async function performRefresh() {
     return;
   }
   const previous = (await chrome.storage.local.get(STORAGE_KEYS.dashboard))[STORAGE_KEYS.dashboard];
+  const isStale = async () => {
+    const current = await loadSettings();
+    return current.baseUrl !== baseUrl || current.token !== token;
+  };
   try {
     const isSelectedMode = projectFilterMode === PROJECT_FILTER_MODES.selected;
     const storedCache = (await chrome.storage.local.get(STORAGE_KEYS.threadCache))[STORAGE_KEYS.threadCache];
-    const { threadCache, ...dashboard } = await collectDashboard(new GitLabClient(baseUrl, token), {
+    const { threadCache, ...collected } = await collectDashboard(new GitLabClient(baseUrl, token), {
       selectedProjectIds: isSelectedMode ? selectedProjectIds : null,
       ignoredCheckNames,
       threadCache: storedCache?.baseUrl === baseUrl ? storedCache : null,
     });
-    dashboard.baseUrl = baseUrl;
-    dashboard.filters = {
-      selectedProjectIds: isSelectedMode ? [...selectedProjectIds].sort((a, b) => a - b) : null,
-      ignoredCheckNames: [...ignoredCheckNames].sort(),
-    };
+    if (await isStale()) {
+      return;
+    }
+    const dashboard = withStableStatuses(previous, {
+      ...collected,
+      baseUrl,
+      filters: {
+        selectedProjectIds: isSelectedMode ? [...selectedProjectIds].sort((a, b) => a - b) : null,
+        ignoredCheckNames: [...ignoredCheckNames].sort(),
+      },
+    });
     if (isSelectedMode && dashboard.watchedProjects === 0 && !dashboard.projectsUnavailable) {
       dashboard.warning = 'Ни один выбранный проект больше не доступен — обновите выбор в настройках';
     }
@@ -205,6 +216,9 @@ async function performRefresh() {
     await showCounts(deriveView(dashboard, userState).counts);
     await notifyChanges(previous, dashboard, userState, settings).catch(console.error);
   } catch (error) {
+    if (await isStale()) {
+      return;
+    }
     await chrome.storage.local.set({
       [STORAGE_KEYS.dashboard]: { ...previous, error: describeError(error), failedAt: new Date().toISOString() },
     });
@@ -257,7 +271,14 @@ async function scheduleUpdateCheck() {
   await chrome.alarms.create(UPDATE_ALARM_NAME, { delayInMinutes: 0, periodInMinutes: UPDATE_CHECK_INTERVAL_MINUTES });
 }
 
-function refresh() {
+function refresh({ afterCurrent = false } = {}) {
+  if (inFlightRefresh && afterCurrent) {
+    queuedRefresh ??= inFlightRefresh.then(() => {
+      queuedRefresh = null;
+      return refresh();
+    });
+    return queuedRefresh;
+  }
   inFlightRefresh ??= performRefresh().catch(console.error).finally(() => {
     inFlightRefresh = null;
   });
@@ -310,7 +331,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'refresh') {
-    refresh().then(() => sendResponse({ done: true }));
+    refresh({ afterCurrent: Boolean(message.settingsChanged) }).then(() => sendResponse({ done: true }));
     return true;
   }
   return false;

@@ -82,6 +82,14 @@ export class GitLabClient {
   }
 
   async graphql(query, variables = {}) {
+    const { data, errors } = await this.graphqlPartial(query, variables);
+    if (errors.length) {
+      throw new GitLabError(200, `GraphQL: ${errors[0].message}`, '/graphql');
+    }
+    return data;
+  }
+
+  async graphqlPartial(query, variables = {}) {
     const response = await this.send(
       this.graphqlUrl,
       {
@@ -91,11 +99,11 @@ export class GitLabClient {
       },
       '/graphql',
     );
-    const { data, errors } = await response.json();
-    if (errors?.length) {
+    const { data = null, errors = [] } = await response.json();
+    if (!data && errors.length) {
       throw new GitLabError(response.status, `GraphQL: ${errors[0].message}`, '/graphql');
     }
-    return data;
+    return { data, errors };
   }
 
   async send(url, init, path) {
@@ -250,9 +258,14 @@ export async function fetchDefaultBranchPipelines(client, projects) {
       [`ref${index}`, project.default_branch],
     ]),
   );
-  const data = await client.graphql(defaultBranchPipelinesQuery(projects.length), variables);
+  const { data, errors } = await client.graphqlPartial(defaultBranchPipelinesQuery(projects.length), variables);
+  const failedAliases = new Set(errors.map((error) => error.path?.[0]));
   return projects.map((_, index) => {
-    const pipeline = data[`p${index}`]?.pipelines?.nodes?.find((node) =>
+    const alias = `p${index}`;
+    if (failedAliases.has(alias) || failedAliases.has(undefined)) {
+      return undefined;
+    }
+    const pipeline = data?.[alias]?.pipelines?.nodes?.find((node) =>
       CONCLUSIVE_PIPELINE_STATUSES.has(node.status.toLowerCase()),
     );
     return pipeline

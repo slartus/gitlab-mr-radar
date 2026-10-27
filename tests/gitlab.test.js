@@ -10,7 +10,7 @@ import {
   fetchPipelineFailures,
   fetchTokenInfo,
 } from '../src/gitlab.js';
-import { FakeClient } from './helpers.js';
+import { FakeClient, partialGraphql } from './helpers.js';
 
 const BASE_URL = 'https://gitlab.example.com';
 
@@ -60,6 +60,14 @@ describe('GitLabClient', () => {
   it('turns GraphQL errors into GitLabError', async () => {
     mock.method(globalThis, 'fetch', async () => jsonResponse({ errors: [{ message: 'boom' }] }));
     await assert.rejects(new GitLabClient(BASE_URL, 't').graphql('{ x }'), /GraphQL: boom/);
+  });
+
+  it('returns partial GraphQL data together with errors', async () => {
+    const body = { data: { p0: null, p1: { ok: true } }, errors: [{ message: 'boom', path: ['p0'] }] };
+    mock.method(globalThis, 'fetch', async () => jsonResponse(body));
+    const client = new GitLabClient(BASE_URL, 't');
+    assert.deepEqual(await client.graphqlPartial('{ x }'), body);
+    await assert.rejects(client.graphql('{ x }'), /GraphQL: boom/);
   });
 });
 
@@ -187,6 +195,29 @@ describe('fetchDefaultBranchPipelines', () => {
       { status: 'failed', webUrl: 'https://gitlab.example.com/a/b/-/pipelines/3', finishedAt: 't' },
       null,
     ]);
+  });
+});
+
+describe('fetchDefaultBranchPipelines with partial errors', () => {
+  const projects = [
+    { path_with_namespace: 'a/b', default_branch: 'main' },
+    { path_with_namespace: 'a/c', default_branch: 'main' },
+  ];
+  const failed = { pipelines: { nodes: [{ status: 'FAILED', path: '/a/c/-/pipelines/1', finishedAt: 't' }] } };
+
+  it('keeps projects that resolved and marks failed aliases as unknown', async () => {
+    const client = new FakeClient({}, {
+      graphql: () => partialGraphql({ p0: null, p1: failed }, [{ message: 'boom', path: ['p0', 'pipelines'] }]),
+    });
+    assert.deepEqual(await fetchDefaultBranchPipelines(client, projects), [
+      undefined,
+      { status: 'failed', webUrl: 'https://gitlab.example.com/a/c/-/pipelines/1', finishedAt: 't' },
+    ]);
+  });
+
+  it('treats an error without a path as unknown for every project', async () => {
+    const client = new FakeClient({}, { graphql: () => partialGraphql({ p0: null, p1: failed }, [{ message: 'boom' }]) });
+    assert.deepEqual(await fetchDefaultBranchPipelines(client, projects), [undefined, undefined]);
   });
 });
 

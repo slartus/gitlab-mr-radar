@@ -54,12 +54,25 @@ export class FakeClient {
   }
 
   async graphql(query, variables) {
+    const { data, errors } = await this.graphqlPartial(query, variables);
+    if (errors.length) {
+      throw new GitLabError(200, `GraphQL: ${errors[0].message}`, '/graphql');
+    }
+    return data;
+  }
+
+  async graphqlPartial(query, variables) {
     if (!this.graphqlHandler) {
       throw new GitLabError(404, 'GraphQL disabled', '/graphql');
     }
-    return this.graphqlHandler(query, variables);
+    const result = await this.graphqlHandler(query, variables);
+    return result?.[PARTIAL] ? { data: result.data, errors: result.errors } : { data: result, errors: [] };
   }
 }
+
+const PARTIAL = Symbol('partial');
+
+export const partialGraphql = (data, errors) => ({ [PARTIAL]: true, data, errors });
 
 export const serverError = (path) => new GitLabError(500, `500 Internal Server Error: ${path}`, path);
 

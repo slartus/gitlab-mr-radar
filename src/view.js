@@ -14,6 +14,16 @@ export const SECTION_IDS = [
   'brokenBranches',
 ];
 
+const MERGEABLE_STATUSES = new Set(['mergeable', 'can_be_merged']);
+const TRANSIENT_MERGE_STATUSES = new Set([
+  'checking',
+  'unchecked',
+  'preparing',
+  'approvals_syncing',
+  'cannot_be_merged_recheck',
+]);
+
+const isMergeable = (item) => MERGEABLE_STATUSES.has(item.status) && !item.draft;
 const isFailedPipeline = (item) => item.pipeline?.status === 'failed' && !item.pipeline.onlyIgnoredFailures;
 const awaitsMyReview = (item) => !item.approvedByMe && !item.draft;
 
@@ -80,8 +90,8 @@ const NOTIFICATION_RULES = [
   {
     type: 'mergeable',
     section: 'authored',
-    applies: (item) => item.status === 'mergeable' && !item.draft,
-    isNew: (item, prev) => Boolean(prev) && prev.status !== 'mergeable',
+    applies: isMergeable,
+    isNew: (item, prev) => Boolean(prev) && !isMergeable(prev),
   },
   {
     type: 'branchBroken',
@@ -101,6 +111,23 @@ const sameSource = (previous, next) =>
   previous.baseUrl === next.baseUrl &&
   previous.username === next.username &&
   JSON.stringify(previous.filters ?? null) === JSON.stringify(next.filters ?? null);
+
+export function withStableStatuses(previous, next) {
+  if (!previous?.sections || !next.sections || !sameSource(previous, next)) {
+    return next;
+  }
+  const previousItems = itemsByKey(previous);
+  const stabilize = (item) => {
+    const prev = previousItems.get(item.key);
+    return TRANSIENT_MERGE_STATUSES.has(item.status) && prev?.status && !TRANSIENT_MERGE_STATUSES.has(prev.status)
+      ? { ...item, status: prev.status }
+      : item;
+  };
+  return {
+    ...next,
+    sections: Object.fromEntries(Object.entries(next.sections).map(([id, items]) => [id, items.map(stabilize)])),
+  };
+}
 
 export function collectNotificationEvents(previous, next, userState = {}, now = Date.now()) {
   if (!previous?.sections || !sameSource(previous, next)) {

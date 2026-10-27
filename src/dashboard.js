@@ -236,7 +236,8 @@ async function fetchBrokenDefaultBranches(client, projects) {
         updatedAt: pipeline.finishedAt ?? new Date(0).toISOString(),
       })),
   );
-  return { broken, unavailable: results.some((result) => result === null) };
+  const unavailable = results.some((result) => result === null || result.includes(undefined));
+  return { broken, unavailable };
 }
 
 export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
@@ -245,9 +246,11 @@ export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
   const [maintainedProjects, authoredMrs, reviewingMrs, assignedMrs, authoredPipelines, todos, token] =
     await Promise.all([
       optional(fetchMaintainedProjects(client)),
-      client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened' }),
+      client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened', with_merge_status_recheck: true }),
       client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
-      optional(client.getAll('/merge_requests', { scope: 'assigned_to_me', state: 'opened' })),
+      optional(
+        client.getAll('/merge_requests', { scope: 'assigned_to_me', state: 'opened', with_merge_status_recheck: true }),
+      ),
       optional(fetchAuthoredPipelines(client)),
       optional(fetchMentionTodos(client)),
       optional(fetchTokenInfo(client)),

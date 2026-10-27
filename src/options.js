@@ -373,7 +373,7 @@ form.addEventListener('submit', async (event) => {
   baseUrlInput.value = baseUrl;
   status.textContent = 'Сохранено, обновляю…';
   try {
-    await chrome.runtime.sendMessage({ type: 'refresh' });
+    await chrome.runtime.sendMessage({ type: 'refresh', settingsChanged: true });
   } finally {
     status.textContent = 'Сохранено';
   }

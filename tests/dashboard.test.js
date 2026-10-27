@@ -13,6 +13,7 @@ import {
   mergeRequestsRoute,
   mr,
   note,
+  partialGraphql,
   serverError,
   statesGraphql,
 } from './helpers.js';
@@ -608,5 +609,33 @@ describe('collectDashboard extras', () => {
     const dashboard = await collectDashboard(client);
     assert.equal(dashboard.defaultBranchesUnavailable, true);
     assert.deepEqual(dashboard.sections.brokenBranches, []);
+  });
+
+  it('keeps broken branches of other projects when GraphQL fails for one of them', async () => {
+    const failed = { pipelines: { nodes: [{ status: 'FAILED', path: '/group/red/-/pipelines/1', finishedAt: 't' }] } };
+    const client = new FakeClient(
+      {
+        ...emptyDashboardRoutes(),
+        '/projects': [
+          { id: 10, path_with_namespace: 'group/red', default_branch: 'main' },
+          { id: 11, path_with_namespace: 'group/gone', default_branch: 'main' },
+        ],
+        '/projects/10/merge_requests': [],
+        '/projects/11/merge_requests': [],
+      },
+      { graphql: () => partialGraphql({ p0: failed, p1: null }, [{ message: 'boom', path: ['p1'] }]) },
+    );
+    const dashboard = await collectDashboard(client);
+    assert.equal(dashboard.defaultBranchesUnavailable, true);
+    assert.deepEqual(dashboard.sections.brokenBranches.map((item) => item.key), ['branch:10']);
+  });
+
+  it('asks GitLab to recheck merge status of my and assigned MRs', async () => {
+    const client = new FakeClient(emptyDashboardRoutes());
+    await collectDashboard(client);
+    const scopes = client.calls
+      .filter(({ path, params }) => path === '/merge_requests' && params.with_merge_status_recheck)
+      .map(({ params }) => params.scope);
+    assert.deepEqual(scopes.sort(), ['assigned_to_me', 'created_by_me']);
   });
 });

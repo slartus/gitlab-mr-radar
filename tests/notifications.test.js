@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { formatNotification, notificationTarget } from '../src/notifications.js';
-import { SECTION_IDS, collectNotificationEvents } from '../src/view.js';
+import { SECTION_IDS, collectNotificationEvents, withStableStatuses } from '../src/view.js';
 
 const BASE_URL = 'https://gitlab.example.com';
 const NOW = Date.parse('2026-03-10T15:00:00');
@@ -117,6 +117,44 @@ describe('collectNotificationEvents', () => {
       'ciFailed:3',
       'mergeable:4',
     ]);
+  });
+
+  it('treats the legacy can_be_merged status as mergeable', () => {
+    const previous = dashboard({ authored: [mrItem('1', { status: 'not_approved' })] });
+    const next = dashboard({ authored: [mrItem('1', { status: 'can_be_merged' })] });
+    assert.deepEqual(changes(previous, next), ['mergeable:1']);
+  });
+
+  it('does not report a mergeable MR again after GitLab rechecks its status', () => {
+    const first = dashboard({ authored: [mrItem('1', { status: 'mergeable' })] });
+    const checking = withStableStatuses(first, dashboard({ authored: [mrItem('1', { status: 'checking' })] }));
+    const again = withStableStatuses(checking, dashboard({ authored: [mrItem('1', { status: 'mergeable' })] }));
+    assert.equal(checking.sections.authored[0].status, 'mergeable');
+    assert.deepEqual(changes(first, checking), []);
+    assert.deepEqual(changes(checking, again), []);
+  });
+
+  it('keeps the stable status across several rechecks, including the legacy one', () => {
+    const first = dashboard({ authored: [mrItem('1', { status: 'can_be_merged' })] });
+    const second = withStableStatuses(first, dashboard({ authored: [mrItem('1', { status: 'cannot_be_merged_recheck' })] }));
+    const third = withStableStatuses(second, dashboard({ authored: [mrItem('1', { status: 'unchecked' })] }));
+    assert.equal(third.sections.authored[0].status, 'can_be_merged');
+  });
+
+  it('keeps a transient status when nothing stable is known', () => {
+    const previous = dashboard({ authored: [mrItem('1', { status: 'unchecked' })] });
+    const next = withStableStatuses(
+      previous,
+      dashboard({ authored: [mrItem('1', { status: 'checking' }), mrItem('2', { status: 'checking' })] }),
+    );
+    assert.deepEqual(next.sections.authored.map((item) => item.status), ['checking', 'checking']);
+    const stable = dashboard({ authored: [mrItem('1', { status: 'mergeable' })] });
+    const checking = dashboard({ authored: [mrItem('1', { status: 'checking' })] });
+    [{ username: 'other' }, { baseUrl: 'https://other.example.com' }, { filters: { selectedProjectIds: [1] } }].forEach(
+      (source) => {
+        assert.equal(withStableStatuses({ ...stable, ...source }, checking).sections.authored[0].status, 'checking');
+      },
+    );
   });
 
   it('reports a default branch that turned red', () => {
