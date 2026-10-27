@@ -96,13 +96,21 @@ export function statesGraphql(statesByPath) {
           nodes: variables.iids
             .filter((iid) => states[iid])
             .map((iid) => {
-              const { approvers = [], notes = 0, resolvable = 0, resolved = 0 } = states[iid];
+              const { approvers = [], notes = 0, resolvable = 0, resolved = 0, reviewStates = {} } = states[iid];
               return {
                 iid,
                 userNotesCount: notes,
                 resolvableDiscussionsCount: resolvable,
                 resolvedDiscussionsCount: resolved,
                 approvedBy: { nodes: approvers.map((user) => ({ id: `gid://gitlab/User/${user.id}` })) },
+                ...(query.includes('reviewState') && {
+                  reviewers: {
+                    nodes: Object.entries(reviewStates).map(([id, reviewState]) => ({
+                      id: `gid://gitlab/User/${id}`,
+                      mergeRequestInteraction: { reviewState },
+                    })),
+                  },
+                }),
               };
             }),
         },

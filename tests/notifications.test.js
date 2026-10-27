@@ -73,6 +73,30 @@ describe('collectNotificationEvents', () => {
     assert.deepEqual(changes(previous, next), ['review:2']);
   });
 
+  it('reports a review again when the author asks for it after my requested changes', () => {
+    const previous = dashboard({ reviewing: [mrItem('1', { myReviewState: 'requested_changes' })] });
+    const asked = dashboard({ reviewing: [mrItem('1', { myReviewState: 'unreviewed' })] });
+    assert.deepEqual(changes(previous, asked), ['review:1']);
+    assert.deepEqual(changes(dashboard({ reviewing: [] }), previous), []);
+  });
+
+  it('keeps my last known review state while GitLab does not report it', () => {
+    const previous = dashboard({
+      reviewing: [mrItem('1', { kind: 'mr', myReviewState: 'reviewed' }), mrItem('2', { kind: 'mr', myReviewState: null })],
+    });
+    const stored = JSON.parse(JSON.stringify(previous));
+    assert.equal(stored.sections.reviewing[1].myReviewState, null);
+    assert.deepEqual(withStableStatuses(stored, dashboard({ reviewing: [mrItem('1', { kind: 'mr' })] })).sections.reviewing[0].myReviewState, 'reviewed');
+    const unknown = withStableStatuses(previous, dashboard({ reviewing: [mrItem('1', { kind: 'mr' }), mrItem('2', { kind: 'mr' })] }));
+    assert.deepEqual(unknown.sections.reviewing.map((item) => item.myReviewState), ['reviewed', null]);
+    assert.deepEqual(changes(previous, unknown), []);
+    const reset = withStableStatuses(
+      unknown,
+      dashboard({ reviewing: [mrItem('1', { kind: 'mr', myReviewState: null }), mrItem('2', { kind: 'mr', myReviewState: null })] }),
+    );
+    assert.deepEqual(changes(unknown, reset), ['review:1']);
+  });
+
   it('reports a review again when my approval was reset', () => {
     const previous = dashboard({ reviewing: [mrItem('1', { approvedByMe: true })] });
     const next = dashboard({ reviewing: [mrItem('1')] });

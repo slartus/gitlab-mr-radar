@@ -169,8 +169,43 @@ describe('fetchMergeRequestStates', () => {
     const states = await fetchMergeRequestStates(client, 'group/project', [7, 8]);
 
     assert.deepEqual(variables, { fullPath: 'group/project', iids: ['7', '8'] });
-    assert.deepEqual(states.get(7), { approverIds: [42], userNotesCount: 4, unresolvedThreads: 2, resolvedThreads: 1 });
+    assert.deepEqual(states.get(7), {
+      approverIds: [42],
+      userNotesCount: 4,
+      unresolvedThreads: 2,
+      resolvedThreads: 1,
+    });
     assert.equal(states.has(8), false);
+  });
+
+  it('reads review states of reviewers only when asked', async () => {
+    const queries = [];
+    const node = {
+      iid: '7',
+      userNotesCount: 0,
+      resolvableDiscussionsCount: 0,
+      resolvedDiscussionsCount: 0,
+      approvedBy: { nodes: [] },
+      reviewers: {
+        nodes: [
+          { id: 'gid://gitlab/User/1', mergeRequestInteraction: { reviewState: 'REQUESTED_CHANGES' } },
+          { id: 'gid://gitlab/User/2', mergeRequestInteraction: null },
+        ],
+      },
+    };
+    const client = new FakeClient({}, {
+      graphql: (query) => {
+        queries.push(query);
+        return { project: { mergeRequests: { nodes: [node] } } };
+      },
+    });
+
+    const states = await fetchMergeRequestStates(client, 'group/project', [7], { withReviewState: true });
+    await fetchMergeRequestStates(client, 'group/project', [7]);
+
+    assert.deepEqual(states.get(7).reviewStates, { 1: 'requested_changes' });
+    assert.ok(queries[0].includes('reviewState'));
+    assert.ok(!queries[1].includes('reviewState'));
   });
 
   it('returns no states for an inaccessible project', async () => {

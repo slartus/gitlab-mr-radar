@@ -19,7 +19,7 @@ const AUTHORED_PIPELINES_QUERY = `
   }
 `;
 
-const MERGE_REQUEST_STATES_QUERY = `
+const mergeRequestStatesQuery = (withReviewState) => `
   query MergeRequestStates($fullPath: ID!, $iids: [String!]) {
     project(fullPath: $fullPath) {
       mergeRequests(iids: $iids, first: 100) {
@@ -29,6 +29,7 @@ const MERGE_REQUEST_STATES_QUERY = `
           resolvableDiscussionsCount
           resolvedDiscussionsCount
           approvedBy { nodes { id } }
+          ${withReviewState ? 'reviewers { nodes { id mergeRequestInteraction { reviewState } } }' : ''}
         }
       }
     }
@@ -233,8 +234,18 @@ export async function fetchMaintainedProjects(client) {
   return projects.filter(hasMergeRequests);
 }
 
-export async function fetchMergeRequestStates(client, fullPath, iids) {
-  const data = await client.graphql(MERGE_REQUEST_STATES_QUERY, { fullPath, iids: iids.map(String) });
+const userIdOf = (gid) => Number(gid.split('/').pop());
+
+function reviewStatesOf(node) {
+  return Object.fromEntries(
+    (node.reviewers?.nodes ?? [])
+      .filter((reviewer) => reviewer.mergeRequestInteraction?.reviewState)
+      .map((reviewer) => [userIdOf(reviewer.id), reviewer.mergeRequestInteraction.reviewState.toLowerCase()]),
+  );
+}
+
+export async function fetchMergeRequestStates(client, fullPath, iids, { withReviewState = false } = {}) {
+  const data = await client.graphql(mergeRequestStatesQuery(withReviewState), { fullPath, iids: iids.map(String) });
   const isComplete = (node) =>
     Array.isArray(node.approvedBy?.nodes) &&
     [node.userNotesCount, node.resolvableDiscussionsCount, node.resolvedDiscussionsCount].every(Number.isInteger);
@@ -242,7 +253,8 @@ export async function fetchMergeRequestStates(client, fullPath, iids) {
     (data.project?.mergeRequests?.nodes ?? []).filter(isComplete).map((node) => [
       Number(node.iid),
       {
-        approverIds: node.approvedBy.nodes.map((user) => Number(user.id.split('/').pop())),
+        approverIds: node.approvedBy.nodes.map((user) => userIdOf(user.id)),
+        ...(withReviewState && { reviewStates: reviewStatesOf(node) }),
         userNotesCount: node.userNotesCount,
         unresolvedThreads: node.resolvableDiscussionsCount - node.resolvedDiscussionsCount,
         resolvedThreads: node.resolvedDiscussionsCount,

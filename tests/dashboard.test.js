@@ -439,6 +439,103 @@ describe('collectDashboard with GraphQL merge request states', () => {
     assert.deepEqual(byKey, { '10!2': false, '11!2': true });
   });
 
+  it('keeps MRs where I asked for changes out of the badge until review is requested again', async () => {
+    const asked = mr({ iid: 1, references: { full: 'group/project!1' } });
+    const fresh = mr({ iid: 2, references: { full: 'group/project!2' } });
+    const client = (reviewState) =>
+      new FakeClient(
+        { ...emptyDashboardRoutes(), '/merge_requests': mergeRequestsRoute({ reviewing: [asked, fresh] }) },
+        { graphql: statesGraphql({ 'group/project': { 1: { reviewStates: { [ME.id]: reviewState } }, 2: {} } }) },
+      );
+
+    const waiting = await collectDashboard(client('REQUESTED_CHANGES'));
+    assert.deepEqual(waiting.sections.reviewing.map((item) => [item.key, item.myReviewState]), [
+      ['10!1', 'requested_changes'],
+      ['10!2', null],
+    ]);
+    assert.equal(deriveView(waiting).counts.waiting, 1);
+
+    const again = await collectDashboard(client('UNREVIEWED'));
+    assert.equal(deriveView(again).counts.waiting, 2);
+  });
+
+  it('drops review states when the GitLab schema does not know them', async () => {
+    const queries = [];
+    const client = new FakeClient(
+      { ...emptyDashboardRoutes(), '/merge_requests': mergeRequestsRoute({ reviewing: [mr({ iid: 1 })] }) },
+      {
+        graphql: (query, variables) => {
+          queries.push(query);
+          if (query.includes('reviewState')) {
+            throw new GitLabError(200, "GraphQL: Field 'mergeRequestInteraction' doesn't exist", '/graphql');
+          }
+          return statesGraphql({ 'group/project': { 1: { approvers: [ME] } } })(query, variables);
+        },
+      },
+    );
+
+    const { sections } = await collectDashboard(client);
+
+    assert.equal(sections.reviewing[0].approvedByMe, true);
+    assert.equal(sections.reviewing[0].myReviewState, undefined);
+    assert.equal(queries.filter((query) => query.includes('MergeRequestStates')).length, 2);
+    assert.ok(!client.calls.some((call) => call.path.endsWith('/approvals')));
+  });
+
+  it('keeps review state on for GraphQL errors unrelated to it', async () => {
+    const other = mr({ projectId: 11, iid: 2, references: { full: 'group/other!2' } });
+    const queries = [];
+    const client = new FakeClient(
+      {
+        ...emptyDashboardRoutes(),
+        '/merge_requests': mergeRequestsRoute({ reviewing: [mr({ iid: 1 }), other] }),
+        '/projects/11/merge_requests/2/approvals': approvals(),
+      },
+      {
+        graphql: (query, variables) => {
+          if (query.includes('MergeRequestStates')) {
+            queries.push({ path: variables.fullPath, withReviewState: query.includes('reviewState') });
+          }
+          if (variables.fullPath === 'group/other') {
+            throw new GitLabError(200, 'GraphQL: Query has complexity of 300, which exceeds max complexity', '/graphql');
+          }
+          return statesGraphql({ 'group/project': { 1: { reviewStates: { [ME.id]: 'REVIEWED' } } } })(query, variables);
+        },
+      },
+    );
+
+    const { sections } = await collectDashboard(client);
+
+    assert.deepEqual(queries, [
+      { path: 'group/project', withReviewState: true },
+      { path: 'group/other', withReviewState: true },
+    ]);
+    const byKey = Object.fromEntries(sections.reviewing.map((item) => [item.key, item.myReviewState]));
+    assert.deepEqual(byKey, { '10!1': 'reviewed', '11!2': undefined });
+    assert.ok(client.calls.some((call) => call.path === '/projects/11/merge_requests/2/approvals'));
+  });
+
+  it('falls back to REST when the retry without review state fails as well', async () => {
+    const client = new FakeClient(
+      {
+        ...emptyDashboardRoutes(),
+        '/merge_requests': mergeRequestsRoute({ reviewing: [mr({ iid: 1 })] }),
+        '/projects/10/merge_requests/1/approvals': approvals([ME], true),
+      },
+      {
+        graphql: (query) => {
+          throw new GitLabError(
+            200,
+            query.includes('reviewState') ? "GraphQL: Field 'mergeRequestInteraction' doesn't exist" : 'GraphQL: boom',
+            '/graphql',
+          );
+        },
+      },
+    );
+    const { sections } = await collectDashboard(client);
+    assert.equal(sections.reviewing[0].approvedByMe, true);
+  });
+
   it('falls back to REST for MRs with incomplete GraphQL data', async () => {
     const client = new FakeClient(
       { ...routes(), '/projects/10/merge_requests/3/approvals': approvals([ME], true) },

@@ -38,7 +38,10 @@ const isMergeable = (item) => MERGEABLE_STATUSES.has(item.status) && !item.draft
 const isReadyToMerge = (item) =>
   isMergeable(item) && (!item.pipeline || READY_PIPELINE_STATUSES.has(item.pipeline.status));
 const isFailedPipeline = (item) => item.pipeline?.status === 'failed' && !item.pipeline.onlyIgnoredFailures;
-const awaitsMyReview = (item) => !item.approvedByMe && !item.draft;
+const AUTHOR_TURN_REVIEW_STATES = new Set(['requested_changes', 'reviewed']);
+
+export const awaitsAuthor = (item) => AUTHOR_TURN_REVIEW_STATES.has(item.myReviewState);
+const awaitsMyReview = (item) => !item.approvedByMe && !item.draft && !awaitsAuthor(item);
 
 function countActionable({ reviewing, assigned, mentioned, awaitingApproval, threads, authored }) {
   const waiting = new Set([
@@ -141,8 +144,17 @@ export function withStableStatuses(previous, next) {
   const previousItems = itemsByKey(previous);
   const stabilize = (item) => {
     const prev = previousItems.get(item.key);
-    return TRANSIENT_MERGE_STATUSES.has(item.status) && prev?.status && !TRANSIENT_MERGE_STATUSES.has(prev.status)
-      ? { ...item, status: prev.status }
+    if (!prev) {
+      return item;
+    }
+    const keepStatus = TRANSIENT_MERGE_STATUSES.has(item.status) && prev.status && !TRANSIENT_MERGE_STATUSES.has(prev.status);
+    const keepReviewState = item.kind === 'mr' && item.myReviewState === undefined && prev.myReviewState !== undefined;
+    return keepStatus || keepReviewState
+      ? {
+          ...item,
+          ...(keepStatus && { status: prev.status }),
+          ...(keepReviewState && { myReviewState: prev.myReviewState }),
+        }
       : item;
   };
   return {

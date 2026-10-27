@@ -17,6 +17,7 @@ const SKIPPABLE_STATUSES = new Set([403, 404]);
 const FATAL_STATUSES = new Set([401, 429]);
 const MENTION_ACTIONS = new Set(['mentioned', 'directly_addressed']);
 const MENTION_TARGET_TYPES = ['MergeRequest', 'Issue'];
+const REVIEW_STATE_SCHEMA_ERROR = /mergeRequestInteraction|reviewState|MergeRequestReviewer/;
 
 export const mrKey = (mr) => `${mr.project_id}!${mr.iid}`;
 const issueKey = (issue) => `${issue.project_id}#${issue.iid}`;
@@ -110,6 +111,7 @@ async function detailsFromState(client, mr, me, state, shouldCheckThreads, threa
   const details = {
     approvedByMe: state.approverIds.includes(me.id),
     approvalsCount: state.approverIds.length,
+    myReviewState: state.reviewStates ? (state.reviewStates[me.id] ?? null) : undefined,
     threadsAwaitingReply: 0,
   };
   if (!shouldCheckThreads || state.userNotesCount === 0 || state.unresolvedThreads <= 0) {
@@ -130,6 +132,25 @@ function chunk(items, size) {
   );
 }
 
+const isReviewStateSchemaError = (error) =>
+  error instanceof GitLabError && error.path === '/graphql' && REVIEW_STATE_SCHEMA_ERROR.test(error.message);
+
+async function fetchProjectStates(client, path, iids, reviewStateSupport) {
+  if (!reviewStateSupport.enabled) {
+    return fetchMergeRequestStates(client, path, iids);
+  }
+  try {
+    return await fetchMergeRequestStates(client, path, iids, { withReviewState: true });
+  } catch (error) {
+    if (!isReviewStateSchemaError(error)) {
+      throw error;
+    }
+    const states = await fetchMergeRequestStates(client, path, iids);
+    reviewStateSupport.enabled = false;
+    return states;
+  }
+}
+
 async function fetchStates(client, mrs) {
   const iidsByPath = new Map();
   mrs.forEach((mr) => {
@@ -141,8 +162,9 @@ async function fetchStates(client, mrs) {
   const batches = [...iidsByPath].flatMap(([path, pathMrs]) =>
     chunk(pathMrs, MERGE_REQUEST_STATES_BATCH).map((batch) => ({ path, batch })),
   );
+  const reviewStateSupport = { enabled: true };
   const results = await mapLimit(batches, CONCURRENCY, ({ path, batch }) =>
-    optional(fetchMergeRequestStates(client, path, batch.map((mr) => mr.iid))),
+    optional(fetchProjectStates(client, path, batch.map((mr) => mr.iid), reviewStateSupport)),
   );
   const states = new Map();
   batches.forEach(({ batch }, index) =>
@@ -346,8 +368,8 @@ export function classify(
     mrs
       .filter((mr) => details.has(mrKey(mr)))
       .map((mr) => {
-        const { approvedByMe, approvalsCount, threadsAwaitingReply } = details.get(mrKey(mr));
-        return toItem(mr, { approvedByMe, approvalsCount, threadsAwaitingReply });
+        const { approvedByMe, approvalsCount, myReviewState, threadsAwaitingReply } = details.get(mrKey(mr));
+        return toItem(mr, { approvedByMe, approvalsCount, myReviewState, threadsAwaitingReply });
       });
 
   const reviewing = toItems(reviewingMrs.filter((mr) => mr.author.id !== me.id));

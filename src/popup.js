@@ -2,7 +2,7 @@ import { DEFAULT_BASE_URL, STORAGE_KEYS, UPDATE_REPOSITORY, compareVersions } fr
 import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from './links.js';
 import { SNOOZE_OPTIONS, createSnooze, pruneSnoozed } from './snooze.js';
-import { REQUIRED_TOKEN_SCOPE, deriveView, itemsByKey, tokenProblems } from './view.js';
+import { REQUIRED_TOKEN_SCOPE, awaitsAuthor, deriveView, itemsByKey, tokenProblems } from './view.js';
 
 const SECTIONS = [
   { id: 'reviewing', title: 'Меня назначили ревьюером', empty: 'Нет MR на ревью' },
@@ -266,6 +266,9 @@ function renderItem(item, sectionId, baseUrl) {
   if (sectionId === SNOOZED_SECTION.id) tags.push(tag(formatSnooze(item.snooze)));
   if (sectionId === 'mentioned' && item.mentionCount > 1) tags.push(tag(`упоминаний: ${item.mentionCount}`, 'warn'));
   if (['reviewing', 'assigned'].includes(sectionId) && item.approvedByMe) tags.push(tag('я апрувнул', 'ok'));
+  if (sectionId === 'reviewing' && !item.approvedByMe && awaitsAuthor(item)) {
+    tags.push(tag(item.myReviewState === 'requested_changes' ? 'я попросил правки' : 'я отревьюил'));
+  }
   if (item.threadsAwaitingReply > 0) tags.push(tag(`ждут ответа: ${item.threadsAwaitingReply}`, 'warn'));
   const showsPipeline = sectionId === 'authored' && Boolean(item.pipeline);
   if (sectionId === 'authored') {
