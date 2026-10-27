@@ -16,9 +16,22 @@ import {
 import { collectDashboard } from './dashboard.js';
 import { GitLabClient } from './gitlab.js';
 import { isUnderBaseUrl } from './links.js';
-import { enabledEvents, formatNotification, notificationTarget } from './notifications.js';
+import {
+  DEFAULT_QUIET_HOURS,
+  enabledEvents,
+  formatNotification,
+  isQuietTime,
+  mergeEvents,
+  notificationTarget,
+} from './notifications.js';
 import { nextSnoozeExpiry } from './snooze.js';
-import { collectNotificationEvents, deriveView, hasActivePipelines, withStableStatuses } from './view.js';
+import {
+  collectNotificationEvents,
+  deriveView,
+  hasActivePipelines,
+  sortPendingEvents,
+  withStableStatuses,
+} from './view.js';
 
 const ALARM_NAME = 'refresh';
 const UPDATE_ALARM_NAME = 'update-check';
@@ -44,6 +57,7 @@ async function loadSettings() {
     approvalThreshold: 0,
     mutedNotificationTypes: [],
     fastRefreshWhileCi: true,
+    quietHours: DEFAULT_QUIET_HOURS,
     checkUpdates: false,
     notifications: false,
     notificationDetails: false,
@@ -90,13 +104,32 @@ function describeError(error) {
 
 async function notifyChanges(previous, dashboard, userState, settings) {
   if (!settings.notifications || !(await hasNotificationsPermission())) {
+    await chrome.storage.local.remove(STORAGE_KEYS.pendingNotifications);
     return;
   }
+  const stored = (await chrome.storage.local.get(STORAGE_KEYS.pendingNotifications))[STORAGE_KEYS.pendingNotifications];
+  const { relevant, waiting } =
+    stored?.baseUrl === dashboard.baseUrl && stored.username === dashboard.username
+      ? sortPendingEvents(stored.events, dashboard, userState)
+      : { relevant: [], waiting: [] };
   const events = enabledEvents(
-    collectNotificationEvents(previous, dashboard, userState),
+    mergeEvents(relevant, collectNotificationEvents(previous, dashboard, userState)),
     settings.mutedNotificationTypes,
   );
-  if (events.length === 0) {
+  const quiet = isQuietTime(settings.quietHours);
+  const deferred = enabledEvents(quiet ? mergeEvents(waiting, events) : waiting, settings.mutedNotificationTypes);
+  if (deferred.length) {
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.pendingNotifications]: {
+        baseUrl: dashboard.baseUrl,
+        username: dashboard.username,
+        events: deferred,
+      },
+    });
+  } else if (stored) {
+    await chrome.storage.local.remove(STORAGE_KEYS.pendingNotifications);
+  }
+  if (quiet || events.length === 0) {
     return;
   }
   const notificationId = `changes-${Date.now()}`;

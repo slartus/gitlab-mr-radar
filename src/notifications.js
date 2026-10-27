@@ -17,6 +17,33 @@ export const NOTIFICATION_TYPES = Object.entries(EVENT_LABELS).map(([type, { tit
 
 export const enabledEvents = (events, mutedTypes = []) => events.filter(({ type }) => !mutedTypes.includes(type));
 
+export const DEFAULT_QUIET_HOURS = { enabled: false, from: '20:00', to: '09:00', weekends: true };
+
+const eventKey = ({ type, item }) => `${type}:${item.key}`;
+
+export const mergeEvents = (older, newer) =>
+  [...new Map([...older, ...newer].map((event) => [eventKey(event), event])).values()];
+
+function minutesOf(time) {
+  const match = /^(\d{2}):(\d{2})$/.exec(time ?? '');
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+}
+
+export function isQuietTime(quietHours, date = new Date()) {
+  if (!quietHours?.enabled) {
+    return false;
+  }
+  if (quietHours.weekends && (date.getDay() === 0 || date.getDay() === 6)) {
+    return true;
+  }
+  const [from, to] = [minutesOf(quietHours.from), minutesOf(quietHours.to)];
+  if (from === null || to === null || from === to) {
+    return false;
+  }
+  const now = date.getHours() * 60 + date.getMinutes();
+  return from < to ? now >= from && now < to : now >= from || now < to;
+}
+
 export const uniqueEventItems = (events) => [...new Map(events.map(({ item }) => [item.key, item])).values()];
 
 export function notificationTarget(events, baseUrl) {

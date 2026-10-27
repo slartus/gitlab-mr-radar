@@ -30,6 +30,8 @@
     #status { margin-left: 10px; }
     .field-title { margin-top: 16px; font-weight: 600; }
     .types label.checkbox { margin-top: 6px; }
+    .quiet { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 0 24px; }
+    .quiet label.checkbox.inline { margin-top: 0; }
   </style>
 </head>
 <body>
@@ -76,6 +78,15 @@
         Показывать названия MR и задач в уведомлениях
       </label>
       <div class="hint">Уведомления видны на заблокированном экране и при демонстрации экрана — без этой галки показываются только счётчики. Об отложенных MR уведомлений нет.</div>
+      <label class="checkbox">
+        <input id="quiet-enabled" type="checkbox">
+        Тихие часы: не показывать уведомления
+      </label>
+      <div class="quiet">
+        с <input id="quiet-from" type="time" aria-label="Тихие часы: с"> до <input id="quiet-to" type="time" aria-label="Тихие часы: до">
+        <label class="checkbox inline"><input id="quiet-weekends" type="checkbox"> и все выходные</label>
+      </div>
+      <div class="hint">События за тихие часы приходят одним уведомлением после их окончания — только те, что ещё актуальны.</div>
       <div class="field-title">Уведомлять о событиях</div>
       <div id="notification-types" class="types"></div>
     </fieldset>

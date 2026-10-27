@@ -21,6 +21,20 @@ describe('snooze', () => {
     assert.equal(until.getMinutes(), 0);
   });
 
+  it('skips the weekend when snoozing until the morning', () => {
+    const untilDate = (now) => new Date(createSnooze('tomorrow', item('a'), Date.parse(now)).until).getDate();
+    assert.equal(untilDate('2026-03-13T18:00:00'), 16);
+    assert.equal(untilDate('2026-03-14T12:00:00'), 16);
+    assert.equal(untilDate('2026-03-15T23:00:00'), 16);
+  });
+
+  it('snoozes until the next Monday morning', () => {
+    const until = (now) => new Date(createSnooze('monday', item('a'), Date.parse(now)).until);
+    assert.equal(until('2026-03-10T15:00:00').getDate(), 16);
+    assert.equal(until('2026-03-16T08:00:00').getDate(), 23);
+    assert.equal(until('2026-03-15T23:00:00').getHours(), 9);
+  });
+
   it('snoozes until the MR changes', () => {
     const snooze = createSnooze('untilChange', item('a', '2026-03-10T10:00:00Z'), NOW);
     assert.equal(isSnoozeActive(snooze, item('a', '2026-03-10T10:00:00Z'), NOW), true);

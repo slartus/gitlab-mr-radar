@@ -1,15 +1,23 @@
 const HOUR_MS = 60 * 60 * 1000;
 const MORNING_HOUR = 9;
+const SUNDAY = 0;
+const MONDAY = 1;
+const SATURDAY = 6;
 
 export const SNOOZE_OPTIONS = {
   hour: { label: 'на 1 ч' },
-  tomorrow: { label: 'до завтра' },
+  tomorrow: { label: 'до утра', title: 'До 9:00 следующего рабочего дня' },
+  monday: { label: 'до понедельника', title: 'До 9:00 ближайшего понедельника' },
   untilChange: { label: 'до изменений' },
 };
 
-function nextMorning(now) {
+const isWeekend = (date) => date.getDay() === SATURDAY || date.getDay() === SUNDAY;
+
+function nextMorning(now, accept) {
   const date = new Date(now);
-  date.setDate(date.getDate() + 1);
+  do {
+    date.setDate(date.getDate() + 1);
+  } while (!accept(date));
   date.setHours(MORNING_HOUR, 0, 0, 0);
   return date;
 }
@@ -19,7 +27,10 @@ export function createSnooze(option, item, now = Date.now()) {
     return { until: new Date(now + HOUR_MS).toISOString() };
   }
   if (option === 'tomorrow') {
-    return { until: nextMorning(now).toISOString() };
+    return { until: nextMorning(now, (date) => !isWeekend(date)).toISOString() };
+  }
+  if (option === 'monday') {
+    return { until: nextMorning(now, (date) => date.getDay() === MONDAY).toISOString() };
   }
   if (option === 'untilChange') {
     return { updatedAt: item.updatedAt };

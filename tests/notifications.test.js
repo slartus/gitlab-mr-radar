@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { NOTIFICATION_TYPES, enabledEvents, formatNotification, notificationTarget } from '../src/notifications.js';
-import { SECTION_IDS, collectNotificationEvents, withStableStatuses } from '../src/view.js';
+import {
+  NOTIFICATION_TYPES,
+  enabledEvents,
+  formatNotification,
+  isQuietTime,
+  mergeEvents,
+  notificationTarget,
+} from '../src/notifications.js';
+import { SECTION_IDS, collectNotificationEvents, sortPendingEvents, withStableStatuses } from '../src/view.js';
 
 const BASE_URL = 'https://gitlab.example.com';
 const NOW = Date.parse('2026-03-10T15:00:00');
@@ -264,6 +271,88 @@ describe('enabledEvents', () => {
       NOTIFICATION_TYPES.map(({ type }) => type),
       ['review', 'assigned', 'mention', 'approval', 'thread', 'ciFailed', 'mergeable', 'branchBroken'],
     );
+  });
+});
+
+describe('isQuietTime', () => {
+  const quiet = (extra = {}) => ({ enabled: true, from: '20:00', to: '09:00', weekends: false, ...extra });
+  const at = (time) => new Date(`2026-03-10T${time}:00`);
+
+  it('covers a period that crosses midnight', () => {
+    assert.equal(isQuietTime(quiet(), at('19:59')), false);
+    assert.equal(isQuietTime(quiet(), at('20:00')), true);
+    assert.equal(isQuietTime(quiet(), at('03:00')), true);
+    assert.equal(isQuietTime(quiet(), at('09:00')), false);
+  });
+
+  it('covers a period within one day', () => {
+    const lunch = quiet({ from: '13:00', to: '14:00' });
+    assert.equal(isQuietTime(lunch, at('13:30')), true);
+    assert.equal(isQuietTime(lunch, at('14:00')), false);
+    assert.equal(isQuietTime(lunch, at('12:59')), false);
+  });
+
+  it('joins weekends with the night before Monday', () => {
+    const nightsAndWeekends = quiet({ weekends: true });
+    assert.equal(isQuietTime(nightsAndWeekends, new Date('2026-03-15T23:00:00')), true);
+    assert.equal(isQuietTime(nightsAndWeekends, new Date('2026-03-16T08:59:00')), true);
+    assert.equal(isQuietTime(nightsAndWeekends, new Date('2026-03-16T09:00:00')), false);
+    assert.equal(isQuietTime(nightsAndWeekends, new Date('2026-03-13T19:00:00')), false);
+  });
+
+  it('covers whole weekends when asked and nothing when disabled or malformed', () => {
+    const saturdayNoon = new Date('2026-03-14T12:00:00');
+    assert.equal(isQuietTime(quiet({ weekends: true }), saturdayNoon), true);
+    assert.equal(isQuietTime(quiet(), saturdayNoon), false);
+    assert.equal(isQuietTime(quiet({ enabled: false, weekends: true }), saturdayNoon), false);
+    assert.equal(isQuietTime(quiet({ from: '10:00', to: '10:00' }), at('10:00')), false);
+    assert.equal(isQuietTime(quiet({ from: 'x' }), at('22:00')), false);
+    assert.equal(isQuietTime(undefined, at('22:00')), false);
+  });
+});
+
+describe('deferred events', () => {
+  it('merges events by type and MR, keeping the newer copy', () => {
+    const merged = mergeEvents(
+      [{ type: 'review', item: mrItem('1') }, { type: 'thread', item: mrItem('2', { threadsAwaitingReply: 1 }) }],
+      [{ type: 'thread', item: mrItem('2', { threadsAwaitingReply: 2 }) }, { type: 'review', item: mrItem('3') }],
+    );
+    assert.deepEqual(eventsOf(merged), ['review:1', 'thread:2', 'review:3']);
+    assert.equal(merged[1].item.threadsAwaitingReply, 2);
+  });
+
+  it('keeps only events that still apply to the current dashboard', () => {
+    const events = [
+      { type: 'review', item: mrItem('1') },
+      { type: 'review', item: mrItem('2') },
+      { type: 'mergeable', item: mrItem('3', { status: 'mergeable' }) },
+      { type: 'approval', item: mrItem('4') },
+      { type: 'unknown', item: mrItem('5') },
+    ];
+    const current = dashboard({
+      reviewing: [mrItem('1', { title: 'renamed' }), mrItem('2', { approvedByMe: true })],
+      authored: [mrItem('3', { status: 'not_approved' })],
+      awaitingApproval: [mrItem('4')],
+    });
+    const { relevant, waiting } = sortPendingEvents(
+      events,
+      current,
+      { snoozed: { 4: { until: '2026-03-10T16:00:00' } } },
+      NOW,
+    );
+    assert.deepEqual(eventsOf(relevant), ['review:1']);
+    assert.deepEqual(waiting, []);
+    assert.equal(relevant[0].item.title, 'renamed');
+    assert.deepEqual(sortPendingEvents(events, { error: 'x' }, {}, NOW), { relevant: [], waiting: [] });
+  });
+
+  it('keeps events whose source is unavailable until it loads again', () => {
+    const failed = { status: 'failed', id: 1, onlyIgnoredFailures: false };
+    const events = [{ type: 'ciFailed', item: mrItem('1', { pipeline: failed }) }, { type: 'review', item: mrItem('2') }];
+    const partial = dashboard({ authored: [mrItem('1', { pipeline: null })] }, { pipelinesUnavailable: true });
+    const { relevant, waiting } = sortPendingEvents(events, partial, {}, NOW);
+    assert.deepEqual(eventsOf(waiting), ['ciFailed:1']);
+    assert.deepEqual(relevant, []);
   });
 });
 

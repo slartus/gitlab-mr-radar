@@ -357,8 +357,8 @@ function renderSnoozeMenu(item) {
   return createElement(
     'div',
     { className: 'snooze-menu', attrs: { role: 'group', 'aria-label': 'Отложить MR' } },
-    Object.entries(SNOOZE_OPTIONS).map(([option, { label }]) => {
-      const button = createElement('button', { text: label, attrs: { type: 'button' } });
+    Object.entries(SNOOZE_OPTIONS).map(([option, { label, title }]) => {
+      const button = createElement('button', { text: label, attrs: { type: 'button', ...(title && { title }) } });
       button.addEventListener('click', () => snoozeItem(item, option));
       return button;
     }),

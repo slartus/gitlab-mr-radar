@@ -16,7 +16,7 @@ import {
   requestHostPermission,
 } from './config.js';
 import { GitLabClient, fetchMaintainedProjects } from './gitlab.js';
-import { NOTIFICATION_TYPES } from './notifications.js';
+import { DEFAULT_QUIET_HOURS, NOTIFICATION_TYPES } from './notifications.js';
 
 const form = document.getElementById('form');
 const baseUrlInput = document.getElementById('base-url');
@@ -29,6 +29,10 @@ const notificationsInput = document.getElementById('notifications');
 const notificationDetailsInput = document.getElementById('notification-details');
 const notificationTypesList = document.getElementById('notification-types');
 const approvalThresholdInput = document.getElementById('approval-threshold');
+const quietEnabledInput = document.getElementById('quiet-enabled');
+const quietFromInput = document.getElementById('quiet-from');
+const quietToInput = document.getElementById('quiet-to');
+const quietWeekendsInput = document.getElementById('quiet-weekends');
 const status = document.getElementById('status');
 const tokenLink = document.getElementById('token-link');
 const modeInputs = [...document.querySelectorAll('input[name="project-mode"]')];
@@ -53,6 +57,11 @@ checkUpdatesInput.checked =
 notificationsInput.checked = Boolean(stored.notifications) && (await hasNotificationsPermission());
 notificationDetailsInput.checked = Boolean(stored.notificationDetails);
 approvalThresholdInput.value = String(stored.approvalThreshold ?? 0);
+const quietHours = { ...DEFAULT_QUIET_HOURS, ...stored.quietHours };
+quietEnabledInput.checked = quietHours.enabled;
+quietFromInput.value = quietHours.from;
+quietToInput.value = quietHours.to;
+quietWeekendsInput.checked = quietHours.weekends;
 
 const mutedNotificationTypes = new Set(stored.mutedNotificationTypes ?? []);
 const notificationTypeInputs = NOTIFICATION_TYPES.map(({ type, title }) => {
@@ -67,8 +76,8 @@ const notificationTypeInputs = NOTIFICATION_TYPES.map(({ type, title }) => {
   return checkbox;
 });
 const syncNotificationTypes = () =>
-  notificationTypeInputs.forEach((checkbox) => {
-    checkbox.disabled = !notificationsInput.checked;
+  [...notificationTypeInputs, quietEnabledInput, quietFromInput, quietToInput, quietWeekendsInput].forEach((input) => {
+    input.disabled = !notificationsInput.checked;
   });
 syncNotificationTypes();
 
@@ -379,7 +388,12 @@ form.addEventListener('submit', async (event) => {
     await revokeHostPermission(savedBaseUrl);
   }
   if (savedBaseUrl !== baseUrl) {
-    await chrome.storage.local.remove([STORAGE_KEYS.dashboard, STORAGE_KEYS.userState, STORAGE_KEYS.threadCache]);
+    await chrome.storage.local.remove([
+      STORAGE_KEYS.dashboard,
+      STORAGE_KEYS.userState,
+      STORAGE_KEYS.threadCache,
+      STORAGE_KEYS.pendingNotifications,
+    ]);
   }
   await chrome.storage.local.set({
     [STORAGE_KEYS.settings]: {
@@ -399,6 +413,12 @@ form.addEventListener('submit', async (event) => {
       mutedNotificationTypes: notificationTypeInputs
         .filter((checkbox) => !checkbox.checked)
         .map((checkbox) => checkbox.dataset.type),
+      quietHours: {
+        enabled: quietEnabledInput.checked,
+        from: quietFromInput.value || DEFAULT_QUIET_HOURS.from,
+        to: quietToInput.value || DEFAULT_QUIET_HOURS.to,
+        weekends: quietWeekendsInput.checked,
+      },
       approvalThreshold: Math.min(
         MAX_APPROVAL_THRESHOLD,
         Math.max(0, Math.trunc(Number(approvalThresholdInput.value) || 0)),

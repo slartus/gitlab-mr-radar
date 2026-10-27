@@ -173,6 +173,31 @@ export function collectNotificationEvents(previous, next, userState = {}, now = 
   );
 }
 
+export function sortPendingEvents(events, dashboard, userState = {}, now = Date.now()) {
+  const relevant = [];
+  const waiting = [];
+  if (!dashboard?.sections) {
+    return { relevant, waiting };
+  }
+  const view = deriveView(dashboard, userState, now);
+  const rulesByType = new Map(NOTIFICATION_RULES.map((rule) => [rule.type, rule]));
+  events.forEach((event) => {
+    const rule = rulesByType.get(event.type);
+    if (!rule) {
+      return;
+    }
+    if ((rule.sources ?? []).some((source) => dashboard[source])) {
+      waiting.push(event);
+      return;
+    }
+    const current = view.sections[rule.section].find((candidate) => candidate.key === event.item.key);
+    if (current && (rule.applies ?? (() => true))(current)) {
+      relevant.push({ type: event.type, item: current });
+    }
+  });
+  return { relevant, waiting };
+}
+
 export function tokenProblems(token, dismissed = {}, now = Date.now()) {
   if (!token) {
     return [];

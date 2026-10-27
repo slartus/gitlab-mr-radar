@@ -17,6 +17,7 @@ export const STORAGE_KEYS = {
   update: 'update',
   userState: 'userState',
   threadCache: 'threadCache',
+  pendingNotifications: 'pendingNotifications',
 };
 
 export const notificationTargetKey = (notificationId) => `notificationTarget:${notificationId}`;
