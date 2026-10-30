@@ -4,8 +4,8 @@ Chrome-расширение (Manifest V3) для любого GitLab-инста�
 
 <p>
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/popup-dark.png">
-    <img src="docs/popup-light.png" alt="Popup: секции MR, назначенные, упоминания в задачах, мои MR с упавшим CI, сломанный default branch" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/popup-dark-v2.png">
+    <img src="docs/popup-light-v2.png" alt="Popup: секции MR, назначенные, упоминания в задачах, мои MR с упавшим CI, сломанный default branch" width="420">
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/options-dark.png">
