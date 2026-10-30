@@ -90,6 +90,7 @@ let currentUserState = {};
 let pendingUserStateWrite = Promise.resolve();
 let selectedProject = null;
 let filterIdentity = null;
+let expandedSections = {};
 let labelMode = PROJECT_LABEL_MODES.name;
 
 const elements = {
@@ -342,6 +343,12 @@ function updateUserState(change) {
   return pendingUserStateWrite;
 }
 
+const persistUi = () =>
+  updateUserState((userState) => ({
+    ...userState,
+    ui: { ...userState.ui, [filterIdentity]: { project: selectedProject, sections: expandedSections } },
+  }));
+
 const updateSnoozed = (change) =>
   updateUserState((userState) => {
     const current = isCompleteDashboard(currentDashboard)
@@ -411,7 +418,15 @@ function renderSection(section, items, baseUrl, { collapsed = false, emptyText }
     ? createElement('ul', {}, items.map((item) => renderItem(item, section.id, baseUrl)))
     : createElement('div', { className: 'empty', text: emptyText ?? section.empty });
   const details = createElement('details', {}, [summary, body]);
-  details.open = items.length > 0 && !collapsed;
+  const defaultOpen = items.length > 0 && !collapsed;
+  details.open = expandedSections[section.id] ?? defaultOpen;
+  details.addEventListener('toggle', () => {
+    if (details.open === (expandedSections[section.id] ?? defaultOpen)) {
+      return;
+    }
+    expandedSections[section.id] = details.open;
+    persistUi();
+  });
   return details;
 }
 
@@ -481,15 +496,21 @@ const readLabelMode = (settings) =>
 function chooseProject(name) {
   selectedProject = name;
   render(currentDashboard, currentUserState);
+  persistUi();
 }
 
-function renderProjectFilter(dashboard) {
+function renderProjectFilter(dashboard, userState) {
   const identity = `${dashboard.baseUrl ?? ''}/${dashboard.username ?? ''}`;
   if (identity !== filterIdentity) {
     filterIdentity = identity;
-    selectedProject = null;
+    const ui = userState.ui?.[identity] ?? {};
+    selectedProject = ui.project ?? null;
+    expandedSections = ui.sections ?? {};
   }
   const projects = projectCounts(dashboard);
+  if (selectedProject && !projects.some(([name]) => name === selectedProject)) {
+    selectedProject = null;
+  }
   elements.filterBar.hidden = projects.length === 0;
   elements.chip.textContent = selectedProject ? projectDisplay(selectedProject) : 'Все проекты';
   elements.chip.setAttribute('aria-expanded', 'false');
@@ -544,7 +565,7 @@ function render(dashboard, userState) {
     return;
   }
   const view = deriveView(dashboard, userState);
-  renderProjectFilter(dashboard);
+  renderProjectFilter(dashboard, userState);
   const matchesProject = (item) => {
     if (!selectedProject) {
       return true;
@@ -624,17 +645,22 @@ document.addEventListener('click', (event) => {
   }
 });
 
+const onlyUiChanged = ({ oldValue, newValue }) =>
+  JSON.stringify({ ...(oldValue ?? {}), ui: undefined }) === JSON.stringify({ ...(newValue ?? {}), ui: undefined });
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') {
     return;
   }
-  if (changes[STORAGE_KEYS.dashboard] || changes[STORAGE_KEYS.userState] || changes[STORAGE_KEYS.settings]) {
+  const userStateChanged = changes[STORAGE_KEYS.userState];
+  const userStateChangedBeyondUi = userStateChanged && !onlyUiChanged(userStateChanged);
+  if (changes[STORAGE_KEYS.dashboard] || userStateChangedBeyondUi || changes[STORAGE_KEYS.settings]) {
     if (changes[STORAGE_KEYS.settings]) {
       labelMode = readLabelMode(changes[STORAGE_KEYS.settings].newValue);
     }
     render(
       changes[STORAGE_KEYS.dashboard] ? changes[STORAGE_KEYS.dashboard].newValue : currentDashboard,
-      changes[STORAGE_KEYS.userState] ? (changes[STORAGE_KEYS.userState].newValue ?? {}) : currentUserState,
+      userStateChanged ? (userStateChanged.newValue ?? {}) : currentUserState,
     );
   }
   if (changes[STORAGE_KEYS.update]) {
