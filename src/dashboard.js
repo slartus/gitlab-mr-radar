@@ -275,7 +275,7 @@ export function collectPossibleMrs(project, branches, openSourceBranches, me, ba
     .map((identity) => identity.toLowerCase());
   const isMe = (value) => myIdentities.includes((value ?? '').toLowerCase());
   return branches
-    .filter((branch) => !branch.default && !branch.merged && !openSourceBranches.has(branch.name))
+    .filter((branch) => !branch.default && !openSourceBranches.has(branch.name))
     .filter((branch) => {
       const commit = branch.commit ?? {};
       return (
@@ -294,6 +294,7 @@ export function collectPossibleMrs(project, branches, openSourceBranches, me, ba
       reference: project.path_with_namespace,
       webUrl: createMrUrl(baseUrl, project.path_with_namespace, branch.name),
       author: null,
+      merged: Boolean(branch.merged),
       updatedAt: branch.commit?.committed_date ?? branch.commit?.authored_date ?? new Date(0).toISOString(),
     }));
 }

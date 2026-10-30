@@ -122,7 +122,7 @@ describe('collectPossibleMrs', () => {
     );
   });
 
-  it('excludes default, merged and branches that already have an open MR', () => {
+  it('excludes default and branches with an open MR, but keeps merged branches flagged', () => {
     const items = collectPossibleMrs(
       project,
       [
@@ -135,7 +135,9 @@ describe('collectPossibleMrs', () => {
       me,
       'https://gitlab.example.com',
     );
-    assert.deepEqual(items.map((item) => item.title), ['feature/x']);
+    assert.deepEqual(items.map((item) => item.title), ['feature/x', 'done']);
+    assert.equal(items.find((item) => item.title === 'done').merged, true);
+    assert.equal(items.find((item) => item.title === 'feature/x').merged, false);
   });
 
   it('matches the committer identity case-insensitively by email or username', () => {

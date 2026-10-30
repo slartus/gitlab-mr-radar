@@ -306,7 +306,10 @@ function renderItem(item, sectionId, baseUrl) {
     tags.push(tag('конфликт', 'bad'));
   }
   if (sectionId === 'brokenBranches') tags.push(tag('CI упал', 'bad'));
-  if (sectionId === 'possibleMrs') tags.push(tag('создать MR', 'ok'));
+  if (sectionId === 'possibleMrs') {
+    tags.push(tag('создать MR', 'ok'));
+    if (item.merged) tags.push(tag('смержена', 'warn'));
+  }
 
   const author = sectionId === 'authored' ? null : authorLabel(item, sectionId);
   const subline = createElement('span', { className: 'sub' }, [
