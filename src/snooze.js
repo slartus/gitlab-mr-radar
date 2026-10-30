@@ -4,12 +4,19 @@ const SUNDAY = 0;
 const MONDAY = 1;
 const SATURDAY = 6;
 
-export const SNOOZE_OPTIONS = {
+const SNOOZE_OPTIONS = {
   hour: { label: 'на 1 ч' },
   tomorrow: { label: 'до утра', title: 'До 9:00 следующего рабочего дня' },
   monday: { label: 'до понедельника', title: 'До 9:00 ближайшего понедельника' },
   untilChange: { label: 'до изменений' },
+  forever: { label: 'навсегда', title: 'Скрыть навсегда' },
 };
+
+export function snoozeOptions(sectionId) {
+  return sectionId === 'possibleMrs'
+    ? { ...SNOOZE_OPTIONS }
+    : Object.fromEntries(Object.entries(SNOOZE_OPTIONS).filter(([option]) => option !== 'forever'));
+}
 
 const isWeekend = (date) => date.getDay() === SATURDAY || date.getDay() === SUNDAY;
 
@@ -35,12 +42,18 @@ export function createSnooze(option, item, now = Date.now()) {
   if (option === 'untilChange') {
     return { updatedAt: item.updatedAt };
   }
+  if (option === 'forever') {
+    return { forever: true };
+  }
   throw new Error(`Unknown snooze option: ${option}`);
 }
 
 export function isSnoozeActive(snooze, item, now = Date.now()) {
   if (!snooze) {
     return false;
+  }
+  if (snooze.forever) {
+    return true;
   }
   if (snooze.until) {
     return now < Date.parse(snooze.until);
@@ -53,7 +66,8 @@ export function isSnoozeActive(snooze, item, now = Date.now()) {
 
 export function nextSnoozeExpiry(snoozed, now = Date.now()) {
   const expiries = Object.values(snoozed ?? {})
-    .map((snooze) => Date.parse(snooze?.until))
+    .filter((snooze) => snooze?.until)
+    .map((snooze) => Date.parse(snooze.until))
     .filter((time) => time > now);
   return expiries.length ? Math.min(...expiries) : null;
 }
@@ -61,7 +75,7 @@ export function nextSnoozeExpiry(snoozed, now = Date.now()) {
 export function pruneSnoozed(snoozed, itemsByKey, now = Date.now()) {
   return Object.fromEntries(
     Object.entries(snoozed ?? {}).filter(
-      ([key, snooze]) => itemsByKey.has(key) && isSnoozeActive(snooze, itemsByKey.get(key), now),
+      ([key, snooze]) => snooze?.forever || (itemsByKey.has(key) && isSnoozeActive(snooze, itemsByKey.get(key), now)),
     ),
   );
 }

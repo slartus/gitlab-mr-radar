@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { createSnooze, isSnoozeActive, nextSnoozeExpiry, pruneSnoozed } from '../src/snooze.js';
+import { createSnooze, isSnoozeActive, nextSnoozeExpiry, pruneSnoozed, snoozeOptions } from '../src/snooze.js';
 import { deriveView } from '../src/view.js';
 
 const NOW = Date.parse('2026-03-10T15:00:00');
@@ -41,8 +41,31 @@ describe('snooze', () => {
     assert.equal(isSnoozeActive(snooze, item('a', '2026-03-10T10:00:01Z'), NOW), false);
   });
 
+  it('mutes forever', () => {
+    const snooze = createSnooze('forever', item('a'), NOW);
+    assert.deepEqual(snooze, { forever: true });
+    assert.equal(isSnoozeActive(snooze, item('a'), NOW), true);
+    assert.equal(isSnoozeActive(snooze, item('a'), NOW + 365 * 24 * 60 * 60 * 1000), true);
+  });
+
+  it('shows the forever option only for possible MRs', () => {
+    assert.deepEqual(Object.keys(snoozeOptions('possibleMrs')), [
+      'hour',
+      'tomorrow',
+      'monday',
+      'untilChange',
+      'forever',
+    ]);
+    assert.deepEqual(Object.keys(snoozeOptions('reviewing')), [
+      'hour',
+      'tomorrow',
+      'monday',
+      'untilChange',
+    ]);
+  });
+
   it('rejects unknown options and treats empty entries as inactive', () => {
-    assert.throws(() => createSnooze('forever', item('a'), NOW));
+    assert.throws(() => createSnooze('nope', item('a'), NOW));
     assert.equal(isSnoozeActive(undefined, item('a'), NOW), false);
     assert.equal(isSnoozeActive({}, item('a'), NOW), false);
   });
@@ -58,13 +81,16 @@ describe('snooze', () => {
     assert.equal(nextSnoozeExpiry({ d: snoozed.d }, NOW), null);
     assert.equal(nextSnoozeExpiry(undefined, NOW), null);
     assert.equal(nextSnoozeExpiry({ broken: null }, NOW), null);
+    assert.equal(nextSnoozeExpiry({ a: { forever: true } }, NOW), null);
+    assert.equal(nextSnoozeExpiry({ a: { forever: true }, b: { until: '2026-03-10T16:00:00' } }, NOW), Date.parse('2026-03-10T16:00:00'));
   });
 
-  it('prunes expired snoozes and MRs that are gone', () => {
+  it('prunes expired snoozes and MRs that are gone, keeping forever mutes', () => {
     const items = new Map([
       ['active', item('active')],
       ['expired', item('expired')],
       ['changed', item('changed', '2026-03-10T12:00:00Z')],
+      ['forever', item('forever')],
     ]);
     const pruned = pruneSnoozed(
       {
@@ -72,11 +98,13 @@ describe('snooze', () => {
         expired: { until: '2026-03-10T14:00:00' },
         changed: { updatedAt: '2026-03-10T10:00:00Z' },
         gone: { until: '2026-03-10T16:00:00' },
+        forever: { forever: true },
+        goneForever: { forever: true },
       },
       items,
       NOW,
     );
-    assert.deepEqual(Object.keys(pruned), ['active']);
+    assert.deepEqual(Object.keys(pruned), ['active', 'forever', 'goneForever']);
   });
 });
 
@@ -104,5 +132,14 @@ describe('deriveView with snoozed MRs', () => {
     const view = deriveView(dashboard, { snoozed: { c: { until: '2026-03-10T14:00:00' } } }, NOW);
     assert.equal(view.counts.failedCi, 1);
     assert.deepEqual(view.snoozed, []);
+  });
+
+  it('hides a forever-muted branch and surfaces it as snoozed forever', () => {
+    const branch = item('branch:1:feature', undefined, { kind: 'possibleMr' });
+    const view = deriveView({ sections: { possibleMrs: [branch] } }, { snoozed: { 'branch:1:feature': { forever: true } } }, NOW);
+    assert.deepEqual(view.sections.possibleMrs, []);
+    assert.deepEqual(view.snoozed.map(({ key, snooze }) => ({ key, snooze })), [
+      { key: 'branch:1:feature', snooze: { forever: true } },
+    ]);
   });
 });

@@ -1,7 +1,7 @@
 import { DEFAULT_BASE_URL, PROJECT_LABEL_MODES, STORAGE_KEYS, UPDATE_REPOSITORY, compareVersions } from './config.js';
 import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from './links.js';
-import { SNOOZE_OPTIONS, createSnooze, pruneSnoozed } from './snooze.js';
+import { snoozeOptions, createSnooze, pruneSnoozed } from './snooze.js';
 import { REQUIRED_TOKEN_SCOPE, SECTION_META, awaitsAuthor, deriveView, itemsByKey, tokenProblems } from './view.js';
 
 const EMPTY_TEXTS = {
@@ -320,6 +320,9 @@ function renderItem(item, sectionId, baseUrl) {
 }
 
 function formatSnooze(snooze) {
+  if (snooze?.forever) {
+    return 'навсегда';
+  }
   if (!snooze?.until) {
     return 'до изменений';
   }
@@ -376,11 +379,11 @@ const snoozeItem = (item, option) =>
 const unsnoozeItem = (item) =>
   updateSnoozed(({ [item.key]: _removed, ...snoozed }) => snoozed);
 
-function renderSnoozeMenu(item) {
+function renderSnoozeMenu(item, sectionId) {
   return createElement(
     'div',
     { className: 'snooze-menu', attrs: { role: 'group', 'aria-label': 'Отложить MR' } },
-    Object.entries(SNOOZE_OPTIONS).map(([option, { label, title }]) => {
+    Object.entries(snoozeOptions(sectionId)).map(([option, { label, title }]) => {
       const button = createElement('button', { text: label, attrs: { type: 'button', ...(title && { title }) } });
       button.addEventListener('click', () => snoozeItem(item, option));
       return button;
@@ -411,7 +414,7 @@ function renderRowAction(item, sectionId) {
       button.setAttribute('aria-expanded', 'false');
       return;
     }
-    li.querySelector('.row').after(renderSnoozeMenu(item));
+    li.querySelector('.row').after(renderSnoozeMenu(item, sectionId));
     button.setAttribute('aria-expanded', 'true');
   });
   return button;
