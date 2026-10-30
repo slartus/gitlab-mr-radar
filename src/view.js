@@ -242,7 +242,13 @@ export function tokenProblems(token, dismissed = {}, now = Date.now()) {
   }
   const problems = [];
   if (!token.expiresAt) {
-    problems.push({ kind: 'noExpiry', text: 'Токен бессрочный — лучше пересоздать его со сроком действия' });
+    if (!dismissed.noExpiry) {
+      problems.push({
+        kind: 'noExpiry',
+        text: 'Токен бессрочный — лучше пересоздать его со сроком действия',
+        dismissKey: 'noExpiry',
+      });
+    }
   } else {
     const msLeft = Date.parse(token.expiresAt) - now;
     if (msLeft <= 0) {

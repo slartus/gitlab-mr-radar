@@ -158,14 +158,18 @@ describe('tokenProblems', () => {
     assert.deepEqual(texts(null), []);
   });
 
-  it('lets only the extra scopes warning be dismissed, for the same set of scopes', () => {
+  it('lets the no-expiry and extra-scopes warnings be dismissed', () => {
     const token = { expiresAt: null, scopes: ['read_api', 'write_repository', 'api'] };
     const [noExpiry, extraScopes] = tokenProblems(token, {}, NOW);
-    assert.equal(noExpiry.dismissKey, undefined);
+    assert.equal(noExpiry.dismissKey, 'noExpiry');
     assert.equal(extraScopes.dismissKey, 'api,write_repository');
 
+    assert.deepEqual(texts(token, { noExpiry: 'noExpiry', extraScopes: 'api,write_repository' }), []);
     assert.deepEqual(texts(token, { extraScopes: 'api,write_repository' }), [
       'Токен бессрочный — лучше пересоздать его со сроком действия',
+    ]);
+    assert.deepEqual(texts({ ...token, scopes: ['read_api', 'api'] }, { noExpiry: 'noExpiry' }), [
+      'У токена лишние права: api — достаточно read_api',
     ]);
     assert.deepEqual(texts({ ...token, scopes: ['read_api', 'api'] }, { extraScopes: 'api,write_repository' }), [
       'Токен бессрочный — лучше пересоздать его со сроком действия',
