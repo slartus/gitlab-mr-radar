@@ -159,7 +159,7 @@ describe('fetchMergeRequestStates', () => {
                   userNotesCount: 4,
                   resolvableDiscussionsCount: 3,
                   resolvedDiscussionsCount: 1,
-                  approvedBy: { nodes: [{ id: 'gid://gitlab/User/42', username: 'alice' }] },
+                  approvedBy: { nodes: [{ id: 'gid://gitlab/User/42', name: 'Alice', username: 'alice' }] },
                 },
               ],
             },
@@ -173,7 +173,7 @@ describe('fetchMergeRequestStates', () => {
     assert.deepEqual(variables, { fullPath: 'group/project', iids: ['7', '8'] });
     assert.deepEqual(states.get(7), {
       approverIds: [42],
-      approverNames: ['alice'],
+      approverNames: ['Alice'],
       userNotesCount: 4,
       unresolvedThreads: 2,
       resolvedThreads: 1,

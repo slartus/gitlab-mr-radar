@@ -19,7 +19,7 @@ import {
 } from './helpers.js';
 
 const approvals = (approvedBy = [], userHasApproved = false) => ({
-  approved_by: approvedBy,
+  approved_by: approvedBy.map((user) => ({ user })),
   user_has_approved: userHasApproved,
 });
 

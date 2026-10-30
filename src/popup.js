@@ -293,9 +293,7 @@ function renderItem(item, sectionId, baseUrl) {
   if (item.threadsAwaitingReply > 0) tags.push(tag(`ждут ответа: ${item.threadsAwaitingReply}`, 'warn'));
   const showsPipeline = sectionId === 'authored' && Boolean(item.pipeline);
   if (sectionId === 'authored') {
-    const approvers = item.approverNames?.length
-      ? item.approverNames.map((name) => `@${name}`).join(', ')
-      : null;
+    const approvers = item.approverNames?.length ? item.approverNames.join(', ') : null;
     tags.push(
       createElement('span', {
         className: `tag ${item.approvalsCount > 0 ? 'ok' : ''}`.trim(),

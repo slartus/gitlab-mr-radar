@@ -100,7 +100,10 @@ async function fetchDetails(client, mr, me, shouldCheckThreads) {
   return {
     approvedByMe: Boolean(approvals.user_has_approved),
     approvalsCount: approvals.approved_by?.length ?? 0,
-    approverNames: approvals.approved_by?.map((user) => user.username).filter(Boolean) ?? [],
+    approverNames: (approvals.approved_by ?? [])
+      .map((entry) => entry.user ?? entry)
+      .map((user) => user.name || user.username)
+      .filter(Boolean),
     threadsAwaitingReply: shouldCheckThreads ? await fetchThreadsAwaitingReply(client, mr, me) : 0,
   };
 }
