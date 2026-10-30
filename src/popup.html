@@ -20,8 +20,8 @@
   <div id="token" class="notice" hidden></div>
   <div id="error" class="error" hidden></div>
   <div id="filter-bar" class="filter-bar" hidden>
-    <label class="muted" for="project-filter">Проект</label>
-    <select id="project-filter" aria-label="Фильтр по проекту"></select>
+    <button id="project-filter-chip" class="chip" type="button" aria-haspopup="listbox" aria-expanded="false">Все проекты</button>
+    <div id="project-filter-menu" class="chip-menu" role="listbox" hidden></div>
   </div>
   <main id="sections"></main>
   <script type="module" src="popup.js"></script>

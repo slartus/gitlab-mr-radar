@@ -1,4 +1,4 @@
-import { DEFAULT_BASE_URL, STORAGE_KEYS, UPDATE_REPOSITORY, compareVersions } from './config.js';
+import { DEFAULT_BASE_URL, PROJECT_LABEL_MODES, STORAGE_KEYS, UPDATE_REPOSITORY, compareVersions } from './config.js';
 import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from './links.js';
 import { SNOOZE_OPTIONS, createSnooze, pruneSnoozed } from './snooze.js';
@@ -90,6 +90,7 @@ let currentUserState = {};
 let pendingUserStateWrite = Promise.resolve();
 let selectedProject = null;
 let filterIdentity = null;
+let labelMode = PROJECT_LABEL_MODES.name;
 
 const elements = {
   meta: document.getElementById('meta'),
@@ -97,7 +98,8 @@ const elements = {
   update: document.getElementById('update'),
   token: document.getElementById('token'),
   filterBar: document.getElementById('filter-bar'),
-  filter: document.getElementById('project-filter'),
+  chip: document.getElementById('project-filter-chip'),
+  menu: document.getElementById('project-filter-menu'),
   sections: document.getElementById('sections'),
   refresh: document.getElementById('refresh'),
   settings: document.getElementById('settings'),
@@ -465,6 +467,22 @@ function projectCounts(dashboard) {
   return [...counts].sort(([a], [b]) => a.localeCompare(b, 'ru'));
 }
 
+function projectName(path) {
+  return path.split('/').at(-1);
+}
+
+function projectDisplay(path) {
+  return labelMode === PROJECT_LABEL_MODES.fullPath ? path : projectName(path);
+}
+
+const readLabelMode = (settings) =>
+  PROJECT_LABEL_MODES[settings?.projectLabelMode] ?? PROJECT_LABEL_MODES.name;
+
+function chooseProject(name) {
+  selectedProject = name;
+  render(currentDashboard, currentUserState);
+}
+
 function renderProjectFilter(dashboard) {
   const identity = `${dashboard.baseUrl ?? ''}/${dashboard.username ?? ''}`;
   if (identity !== filterIdentity) {
@@ -473,14 +491,23 @@ function renderProjectFilter(dashboard) {
   }
   const projects = projectCounts(dashboard);
   elements.filterBar.hidden = projects.length === 0;
-  elements.filter.replaceChildren(
-    createElement('option', { text: 'Все проекты', attrs: { value: '' } }),
-    ...projects.map(([name, count]) => {
-      const option = createElement('option', { text: `${name} (${count})`, attrs: { value: name } });
-      if (name === selectedProject) option.selected = true;
-      return option;
-    }),
-  );
+  elements.chip.textContent = selectedProject ? projectDisplay(selectedProject) : 'Все проекты';
+  elements.chip.setAttribute('aria-expanded', 'false');
+  elements.menu.hidden = true;
+  const option = (name, count) => {
+    const button = createElement('button', {
+      className: 'chip-option',
+      text: count === undefined ? 'Все проекты' : `${projectDisplay(name)} (${count})`,
+      attrs: {
+        type: 'button',
+        role: 'option',
+        'aria-selected': String(name === selectedProject),
+      },
+    });
+    button.addEventListener('click', () => chooseProject(name));
+    return button;
+  };
+  elements.menu.replaceChildren(option(null), ...projects.map(([name, count]) => option(name, count)));
 }
 
 function render(dashboard, userState) {
@@ -510,7 +537,9 @@ function render(dashboard, userState) {
     : '';
   if (!dashboard?.sections || !dashboard.baseUrl) {
     elements.filterBar.hidden = true;
-    elements.filter.replaceChildren();
+    elements.chip.textContent = 'Все проекты';
+    elements.menu.replaceChildren();
+    elements.menu.hidden = true;
     elements.sections.replaceChildren();
     return;
   }
@@ -562,9 +591,11 @@ function renderUpdate(update) {
 async function loadAndRender() {
   const stored = await chrome.storage.local.get([
     STORAGE_KEYS.dashboard,
+    STORAGE_KEYS.settings,
     STORAGE_KEYS.update,
     STORAGE_KEYS.userState,
   ]);
+  labelMode = readLabelMode(stored[STORAGE_KEYS.settings]);
   render(stored[STORAGE_KEYS.dashboard], stored[STORAGE_KEYS.userState] ?? {});
   renderUpdate(stored[STORAGE_KEYS.update]);
 }
@@ -580,16 +611,27 @@ elements.refresh.addEventListener('click', async () => {
 
 elements.settings.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
-elements.filter.addEventListener('change', () => {
-  selectedProject = elements.filter.value || null;
-  render(currentDashboard, currentUserState);
+elements.chip.addEventListener('click', () => {
+  const open = elements.menu.hidden;
+  elements.menu.hidden = !open;
+  elements.chip.setAttribute('aria-expanded', String(!open));
+});
+
+document.addEventListener('click', (event) => {
+  if (!elements.filterBar.contains(event.target)) {
+    elements.menu.hidden = true;
+    elements.chip.setAttribute('aria-expanded', 'false');
+  }
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') {
     return;
   }
-  if (changes[STORAGE_KEYS.dashboard] || changes[STORAGE_KEYS.userState]) {
+  if (changes[STORAGE_KEYS.dashboard] || changes[STORAGE_KEYS.userState] || changes[STORAGE_KEYS.settings]) {
+    if (changes[STORAGE_KEYS.settings]) {
+      labelMode = readLabelMode(changes[STORAGE_KEYS.settings].newValue);
+    }
     render(
       changes[STORAGE_KEYS.dashboard] ? changes[STORAGE_KEYS.dashboard].newValue : currentDashboard,
       changes[STORAGE_KEYS.userState] ? (changes[STORAGE_KEYS.userState].newValue ?? {}) : currentUserState,

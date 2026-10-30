@@ -11,6 +11,11 @@ export const PROJECT_FILTER_MODES = {
   selected: 'selected',
 };
 
+export const PROJECT_LABEL_MODES = {
+  name: 'name',
+  fullPath: 'fullPath',
+};
+
 export const STORAGE_KEYS = {
   settings: 'settings',
   dashboard: 'dashboard',

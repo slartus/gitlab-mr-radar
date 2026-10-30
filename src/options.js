@@ -6,6 +6,7 @@ import {
   MIN_INTERVAL_MINUTES,
   NOTIFICATIONS_PERMISSION,
   PROJECT_FILTER_MODES,
+  PROJECT_LABEL_MODES,
   STORAGE_KEYS,
   UPDATE_CHECK_ORIGIN,
   hasHostPermission,
@@ -36,6 +37,7 @@ const quietWeekendsInput = document.getElementById('quiet-weekends');
 const status = document.getElementById('status');
 const tokenLink = document.getElementById('token-link');
 const modeInputs = [...document.querySelectorAll('input[name="project-mode"]')];
+const labelModeInputs = [...document.querySelectorAll('input[name="project-label-mode"]')];
 const projectPicker = document.getElementById('project-picker');
 const projectSearch = document.getElementById('project-search');
 const projectList = document.getElementById('projects');
@@ -311,6 +313,12 @@ modeInputs.forEach((input) => {
   input.checked = input.value === initialMode;
   input.addEventListener('change', syncPickerVisibility);
 });
+const initialLabelMode = Object.values(PROJECT_LABEL_MODES).includes(stored.projectLabelMode)
+  ? stored.projectLabelMode
+  : PROJECT_LABEL_MODES.name;
+labelModeInputs.forEach((input) => {
+  input.checked = input.value === initialLabelMode;
+});
 baseUrlInput.addEventListener('change', onBaseUrlChange);
 tokenInput.addEventListener('change', syncPickerVisibility);
 projectSearch.addEventListener('input', applySearch);
@@ -405,6 +413,7 @@ form.addEventListener('submit', async (event) => {
       ),
       fastRefreshWhileCi: fastRefreshInput.checked,
       projectFilterMode,
+      projectLabelMode: labelModeInputs.find((input) => input.checked)?.value ?? PROJECT_LABEL_MODES.name,
       selectedProjectIds: [...selectedProjectIds],
       ignoredCheckNames: parseCheckNames(ignoredChecksInput.value),
       checkUpdates: checkUpdatesInput.checked,
