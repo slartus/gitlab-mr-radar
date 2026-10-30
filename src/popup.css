@@ -162,6 +162,10 @@ li a:hover {
   color: var(--danger);
 }
 
+.tag.mine {
+  color: var(--accent);
+}
+
 .ci {
   padding: 0 12px 6px;
 }

@@ -270,6 +270,7 @@ function renderItem(item, sectionId, baseUrl) {
   const tags = [];
   if (item.kind === 'issue') tags.push(tag('задача'));
   if (item.draft) tags.push(tag('draft'));
+  if (item.author && item.author === currentDashboard?.username && sectionId !== 'authored') tags.push(tag('мой', 'mine'));
   if (sectionId === SNOOZED_SECTION.id) tags.push(tag(formatSnooze(item.snooze)));
   if (sectionId === 'mentioned' && item.mentionCount > 1) tags.push(tag(`упоминаний: ${item.mentionCount}`, 'warn'));
   if (['reviewing', 'assigned'].includes(sectionId) && item.approvedByMe) tags.push(tag('я апрувнул', 'ok'));
