@@ -374,3 +374,32 @@ li:hover .row-action,
   cursor: pointer;
   text-decoration: underline;
 }
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.filter-bar[hidden] {
+  display: none;
+}
+
+.filter-bar .muted {
+  margin-left: 0;
+  flex-shrink: 0;
+}
+
+.filter-bar select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}

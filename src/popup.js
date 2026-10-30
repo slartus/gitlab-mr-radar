@@ -88,12 +88,16 @@ const expandedPipelines = new Set();
 let currentDashboard = null;
 let currentUserState = {};
 let pendingUserStateWrite = Promise.resolve();
+let selectedProject = null;
+let filterIdentity = null;
 
 const elements = {
   meta: document.getElementById('meta'),
   error: document.getElementById('error'),
   update: document.getElementById('update'),
   token: document.getElementById('token'),
+  filterBar: document.getElementById('filter-bar'),
+  filter: document.getElementById('project-filter'),
   sections: document.getElementById('sections'),
   refresh: document.getElementById('refresh'),
   settings: document.getElementById('settings'),
@@ -397,13 +401,13 @@ function renderRowAction(item, sectionId) {
   return button;
 }
 
-function renderSection(section, items, baseUrl, { collapsed = false } = {}) {
+function renderSection(section, items, baseUrl, { collapsed = false, emptyText } = {}) {
   const summary = createElement('summary', { text: section.title }, [
     createElement('span', { className: 'count', text: String(items.length) }),
   ]);
   const body = items.length
     ? createElement('ul', {}, items.map((item) => renderItem(item, section.id, baseUrl)))
-    : createElement('div', { className: 'empty', text: section.empty });
+    : createElement('div', { className: 'empty', text: emptyText ?? section.empty });
   const details = createElement('details', {}, [summary, body]);
   details.open = items.length > 0 && !collapsed;
   return details;
@@ -439,6 +443,44 @@ function renderTokenNotice(dashboard, userState) {
   elements.token.replaceChildren(...problems.map(renderTokenProblem), link);
 }
 
+function projectLabel(item) {
+  if (item.kind === 'branch') {
+    return item.title;
+  }
+  const reference = item.reference ?? '';
+  const cut = reference.search(/[!#]/);
+  return cut > 0 ? reference.slice(0, cut) : null;
+}
+
+function collectProjects(dashboard) {
+  const projects = new Set();
+  SECTIONS.forEach(({ id }) => {
+    (dashboard.sections?.[id] ?? []).forEach((item) => {
+      const label = projectLabel(item);
+      if (label) projects.add(label);
+    });
+  });
+  return [...projects].sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
+function renderProjectFilter(dashboard) {
+  const identity = `${dashboard.baseUrl ?? ''}/${dashboard.username ?? ''}`;
+  if (identity !== filterIdentity) {
+    filterIdentity = identity;
+    selectedProject = null;
+  }
+  const projects = collectProjects(dashboard);
+  elements.filterBar.hidden = projects.length === 0;
+  elements.filter.replaceChildren(
+    createElement('option', { text: 'Все проекты', attrs: { value: '' } }),
+    ...projects.map((name) => {
+      const option = createElement('option', { text: name, attrs: { value: name } });
+      if (name === selectedProject) option.selected = true;
+      return option;
+    }),
+  );
+}
+
 function render(dashboard, userState) {
   currentDashboard = dashboard;
   currentUserState = userState;
@@ -465,14 +507,31 @@ function render(dashboard, userState) {
     ? `Последнее успешное обновление: запросов к GitLab — ${dashboard.stats.requests}, ${(dashboard.stats.durationMs / 1000).toFixed(1)} с`
     : '';
   if (!dashboard?.sections || !dashboard.baseUrl) {
+    elements.filterBar.hidden = true;
+    elements.filter.replaceChildren();
     elements.sections.replaceChildren();
     return;
   }
   const view = deriveView(dashboard, userState);
+  renderProjectFilter(dashboard);
+  const matchesProject = (item) => {
+    if (!selectedProject) {
+      return true;
+    }
+    const label = projectLabel(item);
+    return label === null || label === selectedProject;
+  };
+  const sections = Object.fromEntries(
+    Object.entries(view.sections).map(([id, items]) => [id, items.filter(matchesProject)]),
+  );
+  const snoozed = view.snoozed.filter(matchesProject);
+  const emptyText = selectedProject ? 'Нет MR в этом проекте' : undefined;
   elements.sections.replaceChildren(
-    ...SECTIONS.map((section) => renderSection(section, view.sections[section.id], dashboard.baseUrl)),
-    ...(view.snoozed.length
-      ? [renderSection(SNOOZED_SECTION, view.snoozed, dashboard.baseUrl, { collapsed: true })]
+    ...SECTIONS.map((section) =>
+      renderSection(section, sections[section.id], dashboard.baseUrl, { emptyText }),
+    ),
+    ...(snoozed.length
+      ? [renderSection(SNOOZED_SECTION, snoozed, dashboard.baseUrl, { collapsed: true, emptyText })]
       : []),
   );
 }
@@ -518,6 +577,11 @@ elements.refresh.addEventListener('click', async () => {
 });
 
 elements.settings.addEventListener('click', () => chrome.runtime.openOptionsPage());
+
+elements.filter.addEventListener('change', () => {
+  selectedProject = elements.filter.value || null;
+  render(currentDashboard, currentUserState);
+});
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') {
