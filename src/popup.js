@@ -2,17 +2,19 @@ import { DEFAULT_BASE_URL, PROJECT_LABEL_MODES, STORAGE_KEYS, UPDATE_REPOSITORY,
 import { GitLabClient, fetchPipelineFailures } from './gitlab.js';
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from './links.js';
 import { SNOOZE_OPTIONS, createSnooze, pruneSnoozed } from './snooze.js';
-import { REQUIRED_TOKEN_SCOPE, awaitsAuthor, deriveView, itemsByKey, tokenProblems } from './view.js';
+import { REQUIRED_TOKEN_SCOPE, SECTION_META, awaitsAuthor, deriveView, itemsByKey, tokenProblems } from './view.js';
 
-const SECTIONS = [
-  { id: 'reviewing', title: 'Меня назначили ревьюером', empty: 'Нет MR на ревью' },
-  { id: 'assigned', title: 'Назначены на меня', empty: 'Нет назначенных MR' },
-  { id: 'mentioned', title: 'Меня упомянули', empty: 'Нет новых упоминаний' },
-  { id: 'awaitingApproval', title: 'Ждут моего апрува', empty: 'Всё заапрувлено' },
-  { id: 'threads', title: 'Ждут моего ответа в тредах', empty: 'Нет неотвеченных тредов' },
-  { id: 'authored', title: 'Мои MR', empty: 'Нет открытых MR' },
-  { id: 'brokenBranches', title: 'Сломан default branch', empty: 'Default branch зелёные во всех проектах' },
-];
+const EMPTY_TEXTS = {
+  reviewing: 'Нет MR на ревью',
+  assigned: 'Нет назначенных MR',
+  mentioned: 'Нет новых упоминаний',
+  awaitingApproval: 'Всё заапрувлено',
+  threads: 'Нет неотвеченных тредов',
+  authored: 'Нет открытых MR',
+  brokenBranches: 'Default branch зелёные во всех проектах',
+};
+
+const SECTIONS = SECTION_META.map(({ id, title }) => ({ id, title, empty: EMPTY_TEXTS[id] }));
 
 const STATUS_TAGS = {
   mergeable: { label: 'можно мёржить', tone: 'ok' },
@@ -92,6 +94,7 @@ let selectedProject = null;
 let filterIdentity = null;
 let expandedSections = {};
 let labelMode = PROJECT_LABEL_MODES.name;
+let hiddenSections = [];
 
 const elements = {
   meta: document.getElementById('meta'),
@@ -472,7 +475,7 @@ function projectLabel(item) {
 
 function projectCounts(dashboard) {
   const counts = new Map();
-  SECTIONS.forEach(({ id }) => {
+  SECTIONS.filter(({ id }) => !hiddenSections.includes(id)).forEach(({ id }) => {
     (dashboard.sections?.[id] ?? []).forEach((item) => {
       const label = projectLabel(item);
       if (label) {
@@ -565,7 +568,7 @@ function render(dashboard, userState) {
     elements.sections.replaceChildren();
     return;
   }
-  const view = deriveView(dashboard, userState);
+  const view = deriveView(dashboard, userState, Date.now(), hiddenSections);
   renderProjectFilter(dashboard, userState);
   const matchesProject = (item) => {
     if (!selectedProject) {
@@ -580,7 +583,7 @@ function render(dashboard, userState) {
   const snoozed = view.snoozed.filter(matchesProject);
   const emptyText = selectedProject ? 'Нет MR в этом проекте' : undefined;
   elements.sections.replaceChildren(
-    ...SECTIONS.map((section) =>
+    ...SECTIONS.filter((section) => !hiddenSections.includes(section.id)).map((section) =>
       renderSection(section, sections[section.id], dashboard.baseUrl, { emptyText }),
     ),
     ...(snoozed.length
@@ -618,6 +621,7 @@ async function loadAndRender() {
     STORAGE_KEYS.userState,
   ]);
   labelMode = readLabelMode(stored[STORAGE_KEYS.settings]);
+  hiddenSections = stored[STORAGE_KEYS.settings]?.hiddenSections ?? [];
   render(stored[STORAGE_KEYS.dashboard], stored[STORAGE_KEYS.userState] ?? {});
   renderUpdate(stored[STORAGE_KEYS.update]);
 }
@@ -658,6 +662,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes[STORAGE_KEYS.dashboard] || userStateChangedBeyondUi || changes[STORAGE_KEYS.settings]) {
     if (changes[STORAGE_KEYS.settings]) {
       labelMode = readLabelMode(changes[STORAGE_KEYS.settings].newValue);
+      hiddenSections = changes[STORAGE_KEYS.settings].newValue?.hiddenSections ?? [];
     }
     render(
       changes[STORAGE_KEYS.dashboard] ? changes[STORAGE_KEYS.dashboard].newValue : currentDashboard,

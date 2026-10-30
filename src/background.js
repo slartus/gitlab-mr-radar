@@ -56,6 +56,7 @@ async function loadSettings() {
     ignoredCheckNames: [],
     approvalThreshold: 0,
     mutedNotificationTypes: [],
+    hiddenSections: [],
     fastRefreshWhileCi: true,
     quietHours: DEFAULT_QUIET_HOURS,
     checkUpdates: false,
@@ -198,14 +199,19 @@ async function scheduleSnoozeExpiry(userState) {
 }
 
 async function showCountsFromStorage() {
-  const stored = await chrome.storage.local.get([STORAGE_KEYS.dashboard, STORAGE_KEYS.userState]);
+  const stored = await chrome.storage.local.get([
+    STORAGE_KEYS.dashboard,
+    STORAGE_KEYS.userState,
+    STORAGE_KEYS.settings,
+  ]);
   const dashboard = stored[STORAGE_KEYS.dashboard];
   const userState = stored[STORAGE_KEYS.userState] ?? {};
+  const settings = stored[STORAGE_KEYS.settings] ?? {};
   await scheduleSnoozeExpiry(userState);
   if (!dashboard?.sections || dashboard.error) {
     return;
   }
-  await showCounts(deriveView(dashboard, userState).counts);
+  await showCounts(deriveView(dashboard, userState, Date.now(), settings.hiddenSections ?? []).counts);
 }
 
 async function performRefresh() {
@@ -259,7 +265,8 @@ async function performRefresh() {
     });
     const userState = await loadUserState();
     await scheduleSnoozeExpiry(userState);
-    await showCounts(deriveView(dashboard, userState).counts);
+    const { hiddenSections } = await loadSettings();
+    await showCounts(deriveView(dashboard, userState, Date.now(), hiddenSections ?? []).counts);
     await notifyChanges(previous, dashboard, userState, settings).catch(console.error);
     await scheduleRefresh({ fast: hasActivePipelines(collected) }).catch(console.error);
   } catch (error) {
@@ -383,6 +390,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (area === 'local' && changes[STORAGE_KEYS.settings]) {
     scheduleRefresh({ immediately: false });
+    showCountsFromStorage().catch(console.error);
     const { oldValue, newValue } = changes[STORAGE_KEYS.settings];
     if (Boolean(oldValue?.checkUpdates) !== Boolean(newValue?.checkUpdates)) {
       scheduleUpdateCheck();

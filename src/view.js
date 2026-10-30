@@ -4,15 +4,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const TOKEN_EXPIRY_WARNING_DAYS = 7;
 export const REQUIRED_TOKEN_SCOPE = 'read_api';
 
-export const SECTION_IDS = [
-  'reviewing',
-  'assigned',
-  'mentioned',
-  'awaitingApproval',
-  'threads',
-  'authored',
-  'brokenBranches',
+export const SECTION_META = [
+  { id: 'reviewing', title: 'Меня назначили ревьюером' },
+  { id: 'assigned', title: 'Назначены на меня' },
+  { id: 'mentioned', title: 'Меня упомянули' },
+  { id: 'awaitingApproval', title: 'Ждут моего апрува' },
+  { id: 'threads', title: 'Ждут моего ответа в тредах' },
+  { id: 'authored', title: 'Мои MR' },
+  { id: 'brokenBranches', title: 'Сломан default branch' },
 ];
+
+export const SECTION_IDS = SECTION_META.map(({ id }) => id);
 
 const MERGEABLE_STATUSES = new Set(['mergeable', 'can_be_merged']);
 const TRANSIENT_MERGE_STATUSES = new Set([
@@ -58,7 +60,7 @@ export function itemsByKey(dashboard) {
   return new Map(SECTION_IDS.flatMap((id) => dashboard.sections?.[id] ?? []).map((item) => [item.key, item]));
 }
 
-export function deriveView(dashboard, userState = {}, now = Date.now()) {
+export function deriveView(dashboard, userState = {}, now = Date.now(), hiddenSections = []) {
   const snoozed = userState.snoozed ?? {};
   const isSnoozed = (item) => isSnoozeActive(snoozed[item.key], item, now);
   const sections = Object.fromEntries(
@@ -67,7 +69,10 @@ export function deriveView(dashboard, userState = {}, now = Date.now()) {
   const snoozedItems = [...itemsByKey(dashboard).values()]
     .filter(isSnoozed)
     .map((item) => ({ ...item, snooze: snoozed[item.key] }));
-  return { sections, snoozed: snoozedItems, counts: countActionable(sections) };
+  const visibleSections = hiddenSections.length
+    ? Object.fromEntries(SECTION_IDS.map((id) => [id, hiddenSections.includes(id) ? [] : sections[id]]))
+    : sections;
+  return { sections, snoozed: snoozedItems, counts: countActionable(visibleSections) };
 }
 
 const NOTIFICATION_RULES = [

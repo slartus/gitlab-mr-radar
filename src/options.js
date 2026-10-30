@@ -18,6 +18,7 @@ import {
 } from './config.js';
 import { GitLabClient, fetchMaintainedProjects } from './gitlab.js';
 import { DEFAULT_QUIET_HOURS, NOTIFICATION_TYPES } from './notifications.js';
+import { SECTION_META } from './view.js';
 
 const form = document.getElementById('form');
 const baseUrlInput = document.getElementById('base-url');
@@ -29,6 +30,7 @@ const fastRefreshInput = document.getElementById('fast-refresh');
 const notificationsInput = document.getElementById('notifications');
 const notificationDetailsInput = document.getElementById('notification-details');
 const notificationTypesList = document.getElementById('notification-types');
+const sectionVisibilityList = document.getElementById('section-visibility');
 const approvalThresholdInput = document.getElementById('approval-threshold');
 const quietEnabledInput = document.getElementById('quiet-enabled');
 const quietFromInput = document.getElementById('quiet-from');
@@ -77,6 +79,20 @@ const notificationTypeInputs = NOTIFICATION_TYPES.map(({ type, title }) => {
   notificationTypesList.append(label);
   return checkbox;
 });
+
+const hiddenSections = new Set(stored.hiddenSections ?? []);
+const sectionVisibilityInputs = SECTION_META.map(({ id, title }) => {
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = !hiddenSections.has(id);
+  checkbox.dataset.sectionId = id;
+  const label = document.createElement('label');
+  label.className = 'checkbox';
+  label.append(checkbox, title);
+  sectionVisibilityList.append(label);
+  return checkbox;
+});
+
 const syncNotificationTypes = () =>
   [...notificationTypeInputs, quietEnabledInput, quietFromInput, quietToInput, quietWeekendsInput].forEach((input) => {
     input.disabled = !notificationsInput.checked;
@@ -422,6 +438,9 @@ form.addEventListener('submit', async (event) => {
       mutedNotificationTypes: notificationTypeInputs
         .filter((checkbox) => !checkbox.checked)
         .map((checkbox) => checkbox.dataset.type),
+      hiddenSections: sectionVisibilityInputs
+        .filter((checkbox) => !checkbox.checked)
+        .map((checkbox) => checkbox.dataset.sectionId),
       quietHours: {
         enabled: quietEnabledInput.checked,
         from: quietFromInput.value || DEFAULT_QUIET_HOURS.from,

@@ -35,6 +35,17 @@ describe('deriveView', () => {
     assert.ok(Object.values(sections).every((items) => items.length === 0));
     assert.deepEqual(counts, { waiting: 0, failedCi: 0 });
   });
+
+  it('excludes hidden sections from counts but keeps them in the view', () => {
+    const view = deriveView(
+      { sections: { reviewing: [{ key: 'a', approvedByMe: false, draft: false }] } },
+      {},
+      Date.now(),
+      ['reviewing'],
+    );
+    assert.equal(view.sections.reviewing.length, 1);
+    assert.deepEqual(view.counts, { waiting: 0, failedCi: 0 });
+  });
 });
 
 describe('hasActivePipelines', () => {
