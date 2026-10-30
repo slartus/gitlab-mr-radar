@@ -28,7 +28,7 @@ const mergeRequestStatesQuery = (withReviewState) => `
           userNotesCount
           resolvableDiscussionsCount
           resolvedDiscussionsCount
-          approvedBy { nodes { id } }
+          approvedBy { nodes { id username } }
           ${withReviewState ? 'reviewers { nodes { id mergeRequestInteraction { reviewState } } }' : ''}
         }
       }
@@ -256,6 +256,7 @@ export async function fetchMergeRequestStates(client, fullPath, iids, { withRevi
       Number(node.iid),
       {
         approverIds: node.approvedBy.nodes.map((user) => userIdOf(user.id)),
+        approverNames: node.approvedBy.nodes.map((user) => user.username).filter(Boolean),
         ...(withReviewState && { reviewStates: reviewStatesOf(node) }),
         userNotesCount: node.userNotesCount,
         unresolvedThreads: node.resolvableDiscussionsCount - node.resolvedDiscussionsCount,

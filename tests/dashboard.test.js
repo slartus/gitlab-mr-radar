@@ -19,7 +19,7 @@ import {
 } from './helpers.js';
 
 const approvals = (approvedBy = [], userHasApproved = false) => ({
-  approved_by: approvedBy.map((user) => ({ user })),
+  approved_by: approvedBy,
   user_has_approved: userHasApproved,
 });
 
@@ -229,6 +229,7 @@ describe('collectDashboard', () => {
     assert.deepEqual(sections.awaitingApproval.map((item) => item.key), ['10!3']);
     assert.deepEqual(sections.authored.map((item) => item.key), ['10!2']);
     assert.equal(sections.authored[0].approvalsCount, 1);
+    assert.deepEqual(sections.authored[0].approverNames, ['alice']);
     assert.deepEqual(sections.threads.map((item) => item.key), ['10!1', '10!2']);
     assert.ok(!client.calls.some((call) => call.path === '/projects/10/merge_requests/3/discussions'));
   });

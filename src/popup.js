@@ -293,7 +293,16 @@ function renderItem(item, sectionId, baseUrl) {
   if (item.threadsAwaitingReply > 0) tags.push(tag(`ждут ответа: ${item.threadsAwaitingReply}`, 'warn'));
   const showsPipeline = sectionId === 'authored' && Boolean(item.pipeline);
   if (sectionId === 'authored') {
-    tags.push(tag(`апрувов: ${item.approvalsCount}`, item.approvalsCount > 0 ? 'ok' : ''));
+    const approvers = item.approverNames?.length
+      ? item.approverNames.map((name) => `@${name}`).join(', ')
+      : null;
+    tags.push(
+      createElement('span', {
+        className: `tag ${item.approvalsCount > 0 ? 'ok' : ''}`.trim(),
+        text: `апрувов: ${item.approvalsCount}`,
+        attrs: approvers ? { title: approvers } : {},
+      }),
+    );
     const pipelineStatus = showsPipeline ? PIPELINE_STATUS_TAGS[item.pipeline.status] : null;
     const status = statusTag(item);
     if (status) tags.push(status);

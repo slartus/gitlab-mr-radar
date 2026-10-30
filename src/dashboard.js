@@ -100,6 +100,7 @@ async function fetchDetails(client, mr, me, shouldCheckThreads) {
   return {
     approvedByMe: Boolean(approvals.user_has_approved),
     approvalsCount: approvals.approved_by?.length ?? 0,
+    approverNames: approvals.approved_by?.map((user) => user.username).filter(Boolean) ?? [],
     threadsAwaitingReply: shouldCheckThreads ? await fetchThreadsAwaitingReply(client, mr, me) : 0,
   };
 }
@@ -111,6 +112,7 @@ async function detailsFromState(client, mr, me, state, shouldCheckThreads, threa
   const details = {
     approvedByMe: state.approverIds.includes(me.id),
     approvalsCount: state.approverIds.length,
+    approverNames: state.approverNames ?? [],
     myReviewState: state.reviewStates ? (state.reviewStates[me.id] ?? null) : undefined,
     threadsAwaitingReply: 0,
   };
@@ -465,8 +467,8 @@ export function classify(
     mrs
       .filter((mr) => details.has(mrKey(mr)))
       .map((mr) => {
-        const { approvedByMe, approvalsCount, myReviewState, threadsAwaitingReply } = details.get(mrKey(mr));
-        return toItem(mr, { approvedByMe, approvalsCount, myReviewState, threadsAwaitingReply });
+        const { approvedByMe, approvalsCount, approverNames, myReviewState, threadsAwaitingReply } = details.get(mrKey(mr));
+        return toItem(mr, { approvedByMe, approvalsCount, approverNames, myReviewState, threadsAwaitingReply });
       });
 
   const reviewing = toItems(reviewingMrs.filter((mr) => mr.author.id !== me.id));
