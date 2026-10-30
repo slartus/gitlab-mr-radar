@@ -3,6 +3,8 @@
   --fg: #1f1e24;
   --muted: #737278;
   --border: #e4e4e7;
+  --border-strong: #b8b8c0;
+  --section-head: #ececf0;
   --hover: #f4f4f5;
   --accent: #1f75cb;
   --danger: #dd2b0e;
@@ -17,6 +19,8 @@
     --fg: #ececef;
     --muted: #a4a3a8;
     --border: #333238;
+    --border-strong: #4a4952;
+    --section-head: #26252d;
     --hover: #232228;
     --accent: #63a6e9;
     --danger: #ec5941;
@@ -91,7 +95,12 @@ summary {
   padding: 8px 12px;
   cursor: pointer;
   font-weight: 600;
+  background: var(--section-head);
   user-select: none;
+}
+
+summary[open] {
+  border-bottom: 1px solid var(--border);
 }
 
 .count {
@@ -100,14 +109,15 @@ summary {
   margin-left: 6px;
   padding: 0 6px;
   border-radius: 10px;
-  background: var(--hover);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
   color: var(--muted);
   text-align: center;
   font-weight: 500;
 }
 
 .empty {
-  padding: 0 12px 10px;
+  padding: 0 12px 10px 20px;
   color: var(--muted);
 }
 
@@ -119,7 +129,7 @@ ul {
 
 li a {
   display: block;
-  padding: 6px 12px;
+  padding: 6px 12px 6px 20px;
   color: inherit;
   text-decoration: none;
 }
@@ -167,7 +177,7 @@ li a:hover {
 }
 
 .ci {
-  padding: 0 12px 6px;
+  padding: 0 12px 6px 20px;
 }
 
 .ci-toggle {
@@ -314,7 +324,7 @@ li:hover .row-action,
 .snooze-menu {
   display: flex;
   gap: 6px;
-  padding: 0 12px 6px;
+  padding: 0 12px 6px 20px;
 }
 
 .snooze-menu button {
