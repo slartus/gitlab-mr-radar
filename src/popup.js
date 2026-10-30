@@ -452,15 +452,17 @@ function projectLabel(item) {
   return cut > 0 ? reference.slice(0, cut) : null;
 }
 
-function collectProjects(dashboard) {
-  const projects = new Set();
+function projectCounts(dashboard) {
+  const counts = new Map();
   SECTIONS.forEach(({ id }) => {
     (dashboard.sections?.[id] ?? []).forEach((item) => {
       const label = projectLabel(item);
-      if (label) projects.add(label);
+      if (label) {
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
     });
   });
-  return [...projects].sort((a, b) => a.localeCompare(b, 'ru'));
+  return [...counts].sort(([a], [b]) => a.localeCompare(b, 'ru'));
 }
 
 function renderProjectFilter(dashboard) {
@@ -469,12 +471,12 @@ function renderProjectFilter(dashboard) {
     filterIdentity = identity;
     selectedProject = null;
   }
-  const projects = collectProjects(dashboard);
+  const projects = projectCounts(dashboard);
   elements.filterBar.hidden = projects.length === 0;
   elements.filter.replaceChildren(
     createElement('option', { text: 'Все проекты', attrs: { value: '' } }),
-    ...projects.map((name) => {
-      const option = createElement('option', { text: name, attrs: { value: name } });
+    ...projects.map(([name, count]) => {
+      const option = createElement('option', { text: `${name} (${count})`, attrs: { value: name } });
       if (name === selectedProject) option.selected = true;
       return option;
     }),
