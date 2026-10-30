@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { failureUrl, isHttpsUrl, isUnderBaseUrl } from '../src/links.js';
-import { SECTION_IDS, deriveView, hasActivePipelines, tokenProblems } from '../src/view.js';
+import {
+  SECTION_IDS,
+  collectNotificationEvents,
+  deriveView,
+  hasActivePipelines,
+  sectionsToSkip,
+  tokenProblems,
+} from '../src/view.js';
 
 const BASE_URL = 'https://gitlab.example.com';
 
@@ -36,6 +43,16 @@ describe('deriveView', () => {
     assert.deepEqual(counts, { waiting: 0, failedCi: 0 });
   });
 
+  it('does not count possible MRs towards the badge', () => {
+    const { counts } = deriveView({
+      sections: {
+        reviewing: [{ key: 'a', approvedByMe: false, draft: false }],
+        possibleMrs: [{ key: 'branch:10:x' }, { key: 'branch:10:y' }],
+      },
+    });
+    assert.deepEqual(counts, { waiting: 1, failedCi: 0 });
+  });
+
   it('excludes hidden sections from counts but keeps them in the view', () => {
     const view = deriveView(
       { sections: { reviewing: [{ key: 'a', approvedByMe: false, draft: false }] } },
@@ -45,6 +62,42 @@ describe('deriveView', () => {
     );
     assert.equal(view.sections.reviewing.length, 1);
     assert.deepEqual(view.counts, { waiting: 0, failedCi: 0 });
+  });
+});
+
+describe('sectionsToSkip', () => {
+  it('skips hidden sections when notifications are off', () => {
+    assert.deepEqual(sectionsToSkip({ hiddenSections: ['mentioned', 'authored'] }), ['mentioned', 'authored']);
+  });
+
+  it('keeps a hidden section whose notifications are still enabled', () => {
+    const settings = { hiddenSections: ['mentioned'], notifications: true, mutedNotificationTypes: [] };
+    assert.deepEqual(sectionsToSkip(settings), []);
+  });
+
+  it('skips a hidden section whose notification types are all muted', () => {
+    const settings = { hiddenSections: ['mentioned'], notifications: true, mutedNotificationTypes: ['mention'] };
+    assert.deepEqual(sectionsToSkip(settings), ['mentioned']);
+  });
+
+  it('always skips hidden sections without notifications, e.g. possible MRs', () => {
+    const settings = { hiddenSections: ['possibleMrs'], notifications: true, mutedNotificationTypes: [] };
+    assert.deepEqual(sectionsToSkip(settings), ['possibleMrs']);
+  });
+});
+
+describe('collectNotificationEvents', () => {
+  it('does not flood with events when a section was skipped before', () => {
+    const base = { baseUrl: BASE_URL, username: 'me', filters: null };
+    const previous = { ...base, skippedSections: ['reviewing'], sections: { reviewing: [] } };
+    const next = {
+      ...base,
+      skippedSections: [],
+      sections: {
+        reviewing: [{ key: '10!1', kind: 'mr', approvedByMe: false, draft: false, myReviewState: null }],
+      },
+    };
+    assert.deepEqual(collectNotificationEvents(previous, next), []);
   });
 });
 

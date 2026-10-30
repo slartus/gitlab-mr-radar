@@ -1,3 +1,4 @@
+import { NOTIFICATION_TYPES } from './notifications.js';
 import { isSnoozeActive } from './snooze.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -11,6 +12,7 @@ export const SECTION_META = [
   { id: 'awaitingApproval', title: 'Ждут моего апрува' },
   { id: 'threads', title: 'Ждут моего ответа в тредах' },
   { id: 'authored', title: 'Мои MR' },
+  { id: 'possibleMrs', title: 'Возможные MR' },
   { id: 'brokenBranches', title: 'Сломан default branch' },
 ];
 
@@ -123,11 +125,30 @@ const NOTIFICATION_RULES = [
   },
 ];
 
+export const NOTIFICATION_SECTIONS = Object.fromEntries(
+  NOTIFICATION_RULES.map(({ type, section }) => [type, section]),
+);
+
+export function sectionsToSkip(settings) {
+  const hidden = settings.hiddenSections ?? [];
+  if (!settings.notifications) {
+    return hidden;
+  }
+  const muted = new Set(settings.mutedNotificationTypes ?? []);
+  const notifying = new Set(
+    NOTIFICATION_TYPES.filter(({ type }) => !muted.has(type))
+      .map(({ type }) => NOTIFICATION_SECTIONS[type])
+      .filter(Boolean),
+  );
+  return hidden.filter((id) => !notifying.has(id));
+}
+
 const isComplete = (dashboard) =>
   !dashboard.skippedMrs &&
   !dashboard.skippedProjects &&
   !dashboard.projectsUnavailable &&
-  !dashboard.assignedUnavailable;
+  !dashboard.assignedUnavailable &&
+  !dashboard.skippedSections?.length;
 
 const sameSource = (previous, next) =>
   previous.baseUrl === next.baseUrl &&

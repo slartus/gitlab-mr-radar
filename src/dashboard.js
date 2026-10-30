@@ -262,40 +262,124 @@ async function fetchBrokenDefaultBranches(client, projects) {
   return { broken, unavailable };
 }
 
-export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
+function createMrUrl(baseUrl, projectPath, branchName) {
+  const url = new URL(baseUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/${projectPath}/-/merge_requests/new`;
+  url.searchParams.set('merge_request[source_branch]', branchName);
+  return url.href;
+}
+
+export function collectPossibleMrs(project, branches, openSourceBranches, me, baseUrl) {
+  const myIdentities = [me.name, me.username, me.email, me.public_email, me.commit_email]
+    .filter(Boolean)
+    .map((identity) => identity.toLowerCase());
+  const isMe = (value) => myIdentities.includes((value ?? '').toLowerCase());
+  return branches
+    .filter((branch) => !branch.default && !branch.merged && !openSourceBranches.has(branch.name))
+    .filter((branch) => {
+      const commit = branch.commit ?? {};
+      return (
+        isMe(commit.author_name) ||
+        isMe(commit.committer_name) ||
+        isMe(commit.author_email) ||
+        isMe(commit.committer_email)
+      );
+    })
+    .map((branch) => ({
+      key: `branch:${project.id}:${branch.name}`,
+      kind: 'possibleMr',
+      projectId: project.id,
+      projectPath: project.path_with_namespace,
+      title: branch.name,
+      reference: project.path_with_namespace,
+      webUrl: createMrUrl(baseUrl, project.path_with_namespace, branch.name),
+      author: null,
+      updatedAt: branch.commit?.committed_date ?? branch.commit?.authored_date ?? new Date(0).toISOString(),
+    }));
+}
+
+function combinePossibleMrs(projects, branchLists, mrListsByProject, me, baseUrl) {
+  const items = projects.flatMap((project, index) => {
+    const branches = branchLists[index];
+    const openMrs = mrListsByProject[index];
+    if (!branches || openMrs === null) {
+      return [];
+    }
+    const openSourceBranches = new Set(openMrs.map((mr) => mr.source_branch));
+    return collectPossibleMrs(project, branches, openSourceBranches, me, baseUrl);
+  });
+  return { items, unavailable: branchLists.some((list) => list === null) };
+}
+
+const needs = (skipSections) => {
+  const skipped = new Set(skipSections);
+  const need = (id) => !skipped.has(id);
+  return {
+    reviewing: need('reviewing'),
+    assigned: need('assigned'),
+    mentioned: need('mentioned'),
+    awaitingApproval: need('awaitingApproval'),
+    threads: need('threads'),
+    authored: need('authored'),
+    possibleMrs: need('possibleMrs'),
+    brokenBranches: need('brokenBranches'),
+  };
+};
+
+export async function fetchRaw(client, { selectedProjectIds = null, skipSections = [] } = {}) {
   const me = await client.get('/user');
+  const n = needs(skipSections);
+  const needAuthoredMrs = n.authored || n.threads;
+  const needReviewingMrs = n.reviewing || n.assigned || n.threads || n.mentioned || n.awaitingApproval;
+  const needAssignedMrs = n.assigned || n.threads || n.mentioned || n.awaitingApproval;
+  const needMaintainedProjects = n.awaitingApproval || n.brokenBranches || n.possibleMrs;
 
   const [maintainedProjects, authoredMrs, reviewingMrs, assignedMrs, authoredPipelines, todos, token] =
     await Promise.all([
-      optional(fetchMaintainedProjects(client)),
-      client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened', with_merge_status_recheck: true }),
-      client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id }),
-      optional(
-        client.getAll('/merge_requests', { scope: 'assigned_to_me', state: 'opened', with_merge_status_recheck: true }),
-      ),
-      optional(fetchAuthoredPipelines(client)),
-      optional(fetchMentionTodos(client)),
+      needMaintainedProjects ? optional(fetchMaintainedProjects(client)) : [],
+      needAuthoredMrs
+        ? client.getAll('/merge_requests', { scope: 'created_by_me', state: 'opened', with_merge_status_recheck: true })
+        : [],
+      needReviewingMrs
+        ? client.getAll('/merge_requests', { scope: 'all', state: 'opened', reviewer_id: me.id })
+        : [],
+      needAssignedMrs
+        ? optional(
+            client.getAll('/merge_requests', { scope: 'assigned_to_me', state: 'opened', with_merge_status_recheck: true }),
+          )
+        : [],
+      n.authored ? optional(fetchAuthoredPipelines(client)) : new Map(),
+      n.mentioned ? optional(fetchMentionTodos(client)) : [],
       optional(fetchTokenInfo(client)),
     ]);
   const watchedIds = selectedProjectIds && new Set(selectedProjectIds);
-  const watchedProjects = (maintainedProjects ?? []).filter((project) => !watchedIds || watchedIds.has(project.id));
+  const watchedProjects = needMaintainedProjects
+    ? (maintainedProjects ?? []).filter((project) => !watchedIds || watchedIds.has(project.id))
+    : [];
 
+  const needMaintainedMrLists = n.awaitingApproval || n.possibleMrs;
   const skippedErrors = [];
-  const [maintainedMrLists, defaultBranches] = await Promise.all([
-    mapLimit(watchedProjects, CONCURRENCY, (project) =>
-      orSkip(
-        () =>
-          client.getAll(`/projects/${project.id}/merge_requests`, {
-            state: 'opened',
-            wip: 'no',
-            'not[author_id]': me.id,
-          }),
-        skippedErrors,
-      ),
-    ),
-    fetchBrokenDefaultBranches(client, watchedProjects),
+  const [maintainedMrLists, defaultBranches, branchLists] = await Promise.all([
+    needMaintainedMrLists
+      ? mapLimit(watchedProjects, CONCURRENCY, (project) =>
+          orSkip(
+            () => client.getAll(`/projects/${project.id}/merge_requests`, { state: 'opened' }),
+            skippedErrors,
+          ),
+        )
+      : [],
+    n.brokenBranches ? fetchBrokenDefaultBranches(client, watchedProjects) : { broken: [], unavailable: false },
+    n.possibleMrs
+      ? mapLimit(watchedProjects, CONCURRENCY, (project) =>
+          optional(client.getAll(`/projects/${project.id}/repository/branches`)),
+        )
+      : null,
   ]);
   assertNotAllFailed(maintainedMrLists, skippedErrors);
+  const possibleMrs =
+    branchLists === null
+      ? { items: [], unavailable: false }
+      : combinePossibleMrs(watchedProjects, branchLists, maintainedMrLists, me, client.baseUrl);
 
   return {
     me,
@@ -309,16 +393,28 @@ export async function fetchRaw(client, { selectedProjectIds = null } = {}) {
     watchedProjects: watchedProjects.length,
     skippedProjects: maintainedMrLists.filter((list) => list === null).length,
     projectsUnavailable: maintainedProjects === null,
+    projectsSkipped: !needMaintainedProjects,
     authoredPipelines,
     todos,
     token,
     brokenBranches: defaultBranches.broken,
     defaultBranchesUnavailable: defaultBranches.unavailable,
+    possibleMrs: possibleMrs.items,
+    possibleMrsUnavailable: possibleMrs.unavailable,
   };
 }
 
-export async function enrich(client, raw, threadCache = null) {
+export async function enrich(client, raw, threadCache = null, skipSections = []) {
   const { me, authoredMrs, reviewingMrs, assignedMrs, maintainedMrs } = raw;
+  const n = needs(skipSections);
+  if (!(n.reviewing || n.assigned || n.authored || n.awaitingApproval || n.threads || n.mentioned)) {
+    return {
+      details: new Map(),
+      pipelineFailures: new Map(),
+      skippedMrs: 0,
+      threadCache: threadCache?.userId === me.id ? threadCache : { userId: me.id, entries: {} },
+    };
+  }
   const threadWatchKeys = new Set([...authoredMrs, ...reviewingMrs, ...assignedMrs].map(mrKey));
   const allMrs = uniqueBy([...authoredMrs, ...reviewingMrs, ...assignedMrs, ...maintainedMrs], mrKey);
   const cachedThreads = threadCache?.userId === me.id ? threadCache.entries : {};
@@ -399,27 +495,37 @@ export function classify(
     awaitingApproval: awaitingApproval.sort(byUpdatedDesc),
     threads: threads.sort(byUpdatedDesc),
     authored: authored.sort(byUpdatedDesc),
+    possibleMrs: [...raw.possibleMrs].sort(byUpdatedDesc),
     brokenBranches: [...raw.brokenBranches].sort(byUpdatedDesc),
   };
 }
 
 export async function collectDashboard(
   client,
-  { selectedProjectIds = null, ignoredCheckNames = [], approvalThreshold = 0, threadCache = null } = {},
+  {
+    selectedProjectIds = null,
+    ignoredCheckNames = [],
+    approvalThreshold = 0,
+    threadCache = null,
+    skipSections = [],
+  } = {},
 ) {
-  const raw = await fetchRaw(client, { selectedProjectIds });
-  const enriched = await enrich(client, raw, threadCache);
+  const raw = await fetchRaw(client, { selectedProjectIds, skipSections });
+  const enriched = await enrich(client, raw, threadCache, skipSections);
   return {
     fetchedAt: new Date().toISOString(),
     username: raw.me.username,
     watchedProjects: raw.watchedProjects,
     skippedProjects: raw.skippedProjects,
+    projectsSkipped: raw.projectsSkipped,
+    skippedSections: skipSections,
     skippedMrs: enriched.skippedMrs,
     projectsUnavailable: raw.projectsUnavailable,
     pipelinesUnavailable: raw.authoredPipelines === null,
     mentionsUnavailable: raw.todos === null,
     assignedUnavailable: raw.assignedUnavailable,
     defaultBranchesUnavailable: raw.defaultBranchesUnavailable,
+    possibleMrsUnavailable: raw.possibleMrsUnavailable,
     token: raw.token,
     sections: classify(raw, enriched, { ignoredCheckNames, approvalThreshold }),
     threadCache: enriched.threadCache,

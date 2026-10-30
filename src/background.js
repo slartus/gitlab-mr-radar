@@ -29,6 +29,7 @@ import {
   collectNotificationEvents,
   deriveView,
   hasActivePipelines,
+  sectionsToSkip,
   sortPendingEvents,
   withStableStatuses,
 } from './view.js';
@@ -241,6 +242,7 @@ async function performRefresh() {
       selectedProjectIds: isSelectedMode ? selectedProjectIds : null,
       ignoredCheckNames,
       approvalThreshold,
+      skipSections: sectionsToSkip(settings),
       threadCache: storedCache?.baseUrl === baseUrl ? storedCache : null,
     });
     if (await isStale()) {
@@ -256,7 +258,7 @@ async function performRefresh() {
         approvalThreshold,
       },
     });
-    if (isSelectedMode && dashboard.watchedProjects === 0 && !dashboard.projectsUnavailable) {
+    if (isSelectedMode && !dashboard.projectsSkipped && dashboard.watchedProjects === 0 && !dashboard.projectsUnavailable) {
       dashboard.warning = 'Ни один выбранный проект больше не доступен — обновите выбор в настройках';
     }
     await chrome.storage.local.set({

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { collectDashboard, collectMentions, countThreadsAwaitingReply } from '../src/dashboard.js';
+import { collectDashboard, collectMentions, collectPossibleMrs, countThreadsAwaitingReply } from '../src/dashboard.js';
 import { GitLabError } from '../src/gitlab.js';
 import { deriveView } from '../src/view.js';
 import {
@@ -88,6 +88,116 @@ describe('collectMentions', () => {
   });
 });
 
+describe('collectPossibleMrs', () => {
+  const project = { id: 10, path_with_namespace: 'group/project' };
+  const me = { id: 1, username: 'me', name: 'Me Myself' };
+  const branch = (overrides = {}) => ({
+    name: 'feature/x',
+    default: false,
+    merged: false,
+    commit: {
+      author_name: 'Me Myself',
+      committer_name: 'Me Myself',
+      author_email: 'me@example.com',
+      committer_email: 'me@example.com',
+      committed_date: '2026-01-02T00:00:00Z',
+      authored_date: '2026-01-01T00:00:00Z',
+    },
+    ...overrides,
+  });
+
+  it('keeps my non-default, non-merged branch without an open MR', () => {
+    const items = collectPossibleMrs(project, [branch()], new Set(), me, 'https://gitlab.example.com');
+    assert.equal(items.length, 1);
+    assert.equal(items[0].key, 'branch:10:feature/x');
+    assert.equal(items[0].kind, 'possibleMr');
+    assert.equal(items[0].title, 'feature/x');
+    assert.equal(items[0].reference, 'group/project');
+    assert.equal(items[0].projectPath, 'group/project');
+    assert.equal(items[0].author, null);
+    assert.equal(items[0].updatedAt, '2026-01-02T00:00:00Z');
+    assert.equal(
+      items[0].webUrl,
+      'https://gitlab.example.com/group/project/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature%2Fx',
+    );
+  });
+
+  it('excludes default, merged and branches that already have an open MR', () => {
+    const items = collectPossibleMrs(
+      project,
+      [
+        branch(),
+        branch({ name: 'main', default: true }),
+        branch({ name: 'done', merged: true }),
+        branch({ name: 'with-mr' }),
+      ],
+      new Set(['with-mr']),
+      me,
+      'https://gitlab.example.com',
+    );
+    assert.deepEqual(items.map((item) => item.title), ['feature/x']);
+  });
+
+  it('matches the committer identity case-insensitively by email or username', () => {
+    const items = collectPossibleMrs(
+      project,
+      [
+        branch({
+          name: 'by-email',
+          commit: { author_name: 'Someone', committer_name: 'Else', author_email: 'Me@Example.com', committed_date: 't' },
+        }),
+        branch({ name: 'by-username', commit: { author_name: 'ME', committed_date: 't' } }),
+        branch({ name: 'foreign', commit: { author_name: 'Alice', committer_name: 'Bob', committed_date: 't' } }),
+      ],
+      new Set(),
+      { ...me, email: 'me@example.com' },
+      'https://gitlab.example.com',
+    );
+    assert.deepEqual(items.map((item) => item.title).sort(), ['by-email', 'by-username']);
+  });
+
+  it('falls back to authored_date when committed_date is missing', () => {
+    const items = collectPossibleMrs(
+      project,
+      [branch({ commit: { author_name: 'Me Myself', authored_date: '2026-01-03T00:00:00Z' } })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+    );
+    assert.equal(items[0].updatedAt, '2026-01-03T00:00:00Z');
+  });
+
+  it('ignores branches with no commit or no matching identity', () => {
+    const items = collectPossibleMrs(
+      project,
+      [branch({ name: 'no-commit', commit: null }), branch({ name: 'no-identity' })],
+      new Set(),
+      {},
+      'https://gitlab.example.com',
+    );
+    assert.deepEqual(items, []);
+  });
+
+  it('matches a committer-only identity', () => {
+    const items = collectPossibleMrs(
+      project,
+      [branch({ commit: { author_name: 'Alice', committer_name: 'Me Myself', committed_date: 't' } })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+    );
+    assert.deepEqual(items.map((item) => item.title), ['feature/x']);
+  });
+
+  it('builds a create-MR link under a self-hosted base path', () => {
+    const items = collectPossibleMrs(project, [branch()], new Set(), me, 'https://gitlab.example.com/sub');
+    assert.equal(
+      items[0].webUrl,
+      'https://gitlab.example.com/sub/group/project/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature%2Fx',
+    );
+  });
+});
+
 describe('collectDashboard', () => {
   it('sorts MRs into sections', async () => {
     const reviewing = mr({ iid: 1, updatedAt: '2026-01-03T00:00:00Z', user_notes_count: 2 });
@@ -119,6 +229,17 @@ describe('collectDashboard', () => {
     assert.equal(sections.authored[0].approvalsCount, 1);
     assert.deepEqual(sections.threads.map((item) => item.key), ['10!1', '10!2']);
     assert.ok(!client.calls.some((call) => call.path === '/projects/10/merge_requests/3/discussions'));
+  });
+
+  it('excludes my own MRs from awaiting approval', async () => {
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/projects': [{ id: 10 }],
+      '/projects/10/merge_requests': [mr({ iid: 1, author: ME }), mr({ iid: 2, author: BOB })],
+      '/projects/10/merge_requests/2/approvals': approvals(),
+    });
+    const { sections } = await collectDashboard(client);
+    assert.deepEqual(sections.awaitingApproval.map((item) => item.key), ['10!2']);
   });
 
   it('hides MRs awaiting my approval once they have enough approvals from others', async () => {
@@ -232,6 +353,22 @@ describe('collectDashboard', () => {
     });
     const { sections } = await collectDashboard(client);
     assert.deepEqual(sections.reviewing.map((item) => item.key), ['10!1']);
+    assert.deepEqual(sections.mentioned, []);
+  });
+
+  it('still excludes reviewing MRs from mentions when the other sections are skipped', async () => {
+    const reviewing = mr({ iid: 1, state: 'opened' });
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/merge_requests': mergeRequestsRoute({ reviewing: [reviewing] }),
+      '/projects/10/merge_requests/1/approvals': approvals(),
+      '/todos': [
+        { action_name: 'mentioned', target: reviewing, author: ALICE, created_at: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    const { sections } = await collectDashboard(client, {
+      skipSections: ['reviewing', 'assigned', 'threads', 'authored', 'awaitingApproval', 'brokenBranches', 'possibleMrs'],
+    });
     assert.deepEqual(sections.mentioned, []);
   });
 
@@ -745,6 +882,111 @@ describe('collectDashboard extras', () => {
     const dashboard = await collectDashboard(client);
     assert.equal(dashboard.defaultBranchesUnavailable, true);
     assert.deepEqual(dashboard.sections.brokenBranches.map((item) => item.key), ['branch:10']);
+  });
+
+  it('collects my branches without an open MR into possibleMrs', async () => {
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/user': { ...ME, name: 'Me Myself' },
+      '/projects': [{ id: 10, path_with_namespace: 'group/project' }],
+      '/projects/10/merge_requests': [mr({ iid: 1, author: BOB, source_branch: 'feature/has-mr' })],
+      '/projects/10/repository/branches': [
+        { name: 'main', default: true, merged: false },
+        {
+          name: 'feature/has-mr',
+          default: false,
+          merged: false,
+          commit: { author_name: 'Me Myself', committed_date: '2026-01-01T00:00:00Z' },
+        },
+        {
+          name: 'feature/new',
+          default: false,
+          merged: false,
+          commit: { author_name: 'Me Myself', committed_date: '2026-01-02T00:00:00Z' },
+        },
+      ],
+    });
+    const dashboard = await collectDashboard(client);
+    assert.deepEqual(dashboard.sections.possibleMrs.map((item) => item.title), ['feature/new']);
+    assert.equal(dashboard.possibleMrsUnavailable, false);
+  });
+
+  it('marks possible MRs unavailable when branches cannot be loaded', async () => {
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/projects': [{ id: 10, path_with_namespace: 'group/project' }],
+      '/projects/10/merge_requests': [],
+    });
+    const dashboard = await collectDashboard(client);
+    assert.deepEqual(dashboard.sections.possibleMrs, []);
+    assert.equal(dashboard.possibleMrsUnavailable, true);
+  });
+
+  it('skips possible MRs when the project MR list failed but branches loaded', async () => {
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/user': { ...ME, name: 'Me Myself' },
+      '/projects': [{ id: 10, path_with_namespace: 'group/project' }],
+      '/projects/10/merge_requests': new GitLabError(403, '403 Forbidden', '/projects/10/merge_requests'),
+      '/projects/10/repository/branches': [
+        {
+          name: 'feature/new',
+          default: false,
+          merged: false,
+          commit: { author_name: 'Me Myself', committed_date: '2026-01-02T00:00:00Z' },
+        },
+      ],
+    });
+    const dashboard = await collectDashboard(client);
+    assert.deepEqual(dashboard.sections.possibleMrs, []);
+    assert.equal(dashboard.possibleMrsUnavailable, false);
+  });
+
+  it('does not fetch branches when the possible MRs section is hidden', async () => {
+    const client = new FakeClient({
+      ...emptyDashboardRoutes(),
+      '/projects': [{ id: 10, path_with_namespace: 'group/project' }],
+      '/projects/10/merge_requests': [],
+    });
+    const dashboard = await collectDashboard(client, { skipSections: ['possibleMrs'] });
+    assert.deepEqual(dashboard.sections.possibleMrs, []);
+    assert.equal(dashboard.possibleMrsUnavailable, false);
+    assert.ok(!client.calls.some((call) => call.path === '/projects/10/repository/branches'));
+  });
+
+  it('skips mention todos when the mentioned section is skipped', async () => {
+    const client = new FakeClient(emptyDashboardRoutes());
+    const dashboard = await collectDashboard(client, { skipSections: ['mentioned'] });
+    assert.deepEqual(dashboard.sections.mentioned, []);
+    assert.equal(dashboard.mentionsUnavailable, false);
+    assert.ok(!client.calls.some((call) => call.path === '/todos'));
+  });
+
+  it('skips the watched-projects cluster when its sections are all skipped', async () => {
+    const client = new FakeClient(emptyDashboardRoutes());
+    const dashboard = await collectDashboard(client, {
+      skipSections: ['awaitingApproval', 'brokenBranches', 'possibleMrs'],
+    });
+    assert.equal(dashboard.projectsUnavailable, false);
+    assert.equal(dashboard.watchedProjects, 0);
+    assert.equal(dashboard.defaultBranchesUnavailable, false);
+    assert.equal(dashboard.possibleMrsUnavailable, false);
+    assert.ok(!client.calls.some((call) => call.path === '/projects'));
+    assert.ok(!client.calls.some((call) => call.path.includes('repository/branches')));
+  });
+
+  it('does not fetch authored pipelines when the authored section is skipped', async () => {
+    const client = new FakeClient(emptyDashboardRoutes());
+    const dashboard = await collectDashboard(client, { skipSections: ['authored'] });
+    assert.equal(dashboard.pipelinesUnavailable, false);
+    assert.deepEqual(dashboard.sections.authored, []);
+  });
+
+  it('does not fetch default branch pipelines when brokenBranches is skipped', async () => {
+    const client = new FakeClient(emptyDashboardRoutes());
+    const dashboard = await collectDashboard(client, { skipSections: ['brokenBranches'] });
+    assert.equal(dashboard.defaultBranchesUnavailable, false);
+    assert.deepEqual(dashboard.sections.brokenBranches, []);
   });
 
   it('asks GitLab to recheck merge status of my and assigned MRs', async () => {

@@ -11,6 +11,7 @@ const EMPTY_TEXTS = {
   awaitingApproval: 'Всё заапрувлено',
   threads: 'Нет неотвеченных тредов',
   authored: 'Нет открытых MR',
+  possibleMrs: 'Нет веток без MR',
   brokenBranches: 'Default branch зелёные во всех проектах',
 };
 
@@ -296,6 +297,7 @@ function renderItem(item, sectionId, baseUrl) {
     tags.push(tag('конфликт', 'bad'));
   }
   if (sectionId === 'brokenBranches') tags.push(tag('CI упал', 'bad'));
+  if (sectionId === 'possibleMrs') tags.push(tag('создать MR', 'ok'));
 
   const author = sectionId === 'authored' ? null : authorLabel(item, sectionId);
   const subline = createElement('span', { className: 'sub' }, [
@@ -335,7 +337,8 @@ const isCompleteDashboard = (dashboard) =>
   !dashboard.projectsUnavailable &&
   !dashboard.mentionsUnavailable &&
   !dashboard.assignedUnavailable &&
-  !dashboard.defaultBranchesUnavailable;
+  !dashboard.defaultBranchesUnavailable &&
+  !dashboard.possibleMrsUnavailable;
 
 async function writeUserState(change) {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.userState);
@@ -465,6 +468,9 @@ function renderTokenNotice(dashboard, userState) {
 }
 
 function projectLabel(item) {
+  if (item.projectPath) {
+    return item.projectPath;
+  }
   if (item.kind === 'branch') {
     return item.title;
   }
@@ -553,6 +559,7 @@ function render(dashboard, userState) {
     dashboard?.mentionsUnavailable ? ' · упоминания недоступны' : '',
     dashboard?.assignedUnavailable ? ' · назначенные MR недоступны' : '',
     dashboard?.defaultBranchesUnavailable ? ' · статусы default branch недоступны' : '',
+    dashboard?.possibleMrsUnavailable ? ' · ветки недоступны' : '',
   ].join('');
   elements.meta.textContent = dashboard?.fetchedAt
     ? `@${dashboard.username} · ${formatRelative(dashboard.fetchedAt)}${skipped}`
