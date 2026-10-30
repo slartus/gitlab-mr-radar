@@ -142,6 +142,15 @@ function renderAge(isoDate) {
 
 const openUrl = (url) => chrome.tabs.create({ url });
 
+function deleteBranchUrl(item, baseUrl) {
+  const url = new URL(baseUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/${item.projectPath}/-/branches`;
+  url.searchParams.set('state', 'all');
+  url.searchParams.set('sort', 'updated_desc');
+  url.searchParams.set('search', item.title);
+  return url.href;
+}
+
 function describeFailure(failure) {
   if (failure.kind === 'downstream') {
     return 'дочерний пайплайн';
@@ -315,7 +324,7 @@ function renderItem(item, sectionId, baseUrl) {
     openUrl(webUrl);
   });
   const ciBlock = showsPipeline && item.pipeline.status === 'failed' ? [renderCiBlock(item, baseUrl)] : [];
-  const row = createElement('div', { className: 'row' }, [link, renderRowAction(item, sectionId)]);
+  const row = createElement('div', { className: 'row' }, [link, ...renderRowAction(item, sectionId, baseUrl)]);
   return createElement('li', {}, [row, ...ciBlock]);
 }
 
@@ -391,7 +400,7 @@ function renderSnoozeMenu(item, sectionId) {
   );
 }
 
-function renderRowAction(item, sectionId) {
+function renderRowAction(item, sectionId, baseUrl) {
   if (sectionId === SNOOZED_SECTION.id) {
     const button = createElement('button', {
       className: 'row-action visible',
@@ -399,25 +408,34 @@ function renderRowAction(item, sectionId) {
       attrs: { type: 'button', title: 'Вернуть', 'aria-label': `Вернуть: ${item.title}` },
     });
     button.addEventListener('click', () => unsnoozeItem(item));
-    return button;
+    return [button];
   }
-  const button = createElement('button', {
+  const snooze = createElement('button', {
     className: 'row-action',
     text: '⏰',
     attrs: { type: 'button', title: 'Отложить', 'aria-label': `Отложить: ${item.title}`, 'aria-expanded': 'false' },
   });
-  button.addEventListener('click', () => {
-    const li = button.closest('li');
+  snooze.addEventListener('click', () => {
+    const li = snooze.closest('li');
     const existing = li.querySelector('.snooze-menu');
     if (existing) {
       existing.remove();
-      button.setAttribute('aria-expanded', 'false');
+      snooze.setAttribute('aria-expanded', 'false');
       return;
     }
     li.querySelector('.row').after(renderSnoozeMenu(item, sectionId));
-    button.setAttribute('aria-expanded', 'true');
+    snooze.setAttribute('aria-expanded', 'true');
   });
-  return button;
+  if (sectionId !== 'possibleMrs') {
+    return [snooze];
+  }
+  const removeBranch = createElement('button', {
+    className: 'row-action',
+    text: '🗑',
+    attrs: { type: 'button', title: 'Удалить ветку в GitLab', 'aria-label': `Удалить ветку: ${item.title}` },
+  });
+  removeBranch.addEventListener('click', () => openUrl(deleteBranchUrl(item, baseUrl)));
+  return [snooze, removeBranch];
 }
 
 function renderSection(section, items, baseUrl, { collapsed = false, emptyText } = {}) {
