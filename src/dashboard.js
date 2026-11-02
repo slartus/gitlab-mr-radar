@@ -6,6 +6,7 @@ import {
   fetchAuthoredPipelines,
   fetchDefaultBranchPipelines,
   fetchDiscussions,
+  fetchFirstUniqueCommit,
   fetchMaintainedProjects,
   fetchMergeRequestStates,
   fetchPipelineFailures,
@@ -274,22 +275,58 @@ function createMrUrl(baseUrl, projectPath, branchName) {
   return url.href;
 }
 
-export function collectPossibleMrs(project, branches, openSourceBranches, me, baseUrl) {
-  const myIdentities = [me.name, me.username, me.email, me.public_email, me.commit_email]
+const myIdentitiesOf = (me) =>
+  [me.name, me.username, me.email, me.public_email, me.commit_email]
     .filter(Boolean)
     .map((identity) => identity.toLowerCase());
-  const isMe = (value) => myIdentities.includes((value ?? '').toLowerCase());
-  return branches
-    .filter((branch) => !branch.default && !openSourceBranches.has(branch.name))
-    .filter((branch) => {
-      const commit = branch.commit ?? {};
-      return (
-        isMe(commit.author_name) ||
-        isMe(commit.committer_name) ||
-        isMe(commit.author_email) ||
-        isMe(commit.committer_email)
-      );
-    })
+
+const isMineCommit = (commit, identities) => {
+  const c = commit ?? {};
+  return [c.author_name, c.committer_name, c.author_email, c.committer_email].some((value) =>
+    identities.includes((value ?? '').toLowerCase()),
+  );
+};
+
+const branchOriginCache = new Map();
+const BRANCH_ORIGIN_CACHE_LIMIT = 1000;
+
+async function firstUniqueCommitOf(project, branch, client) {
+  const cacheKey = `${project.id}:${branch.name}:${branch.commit?.id ?? ''}`;
+  let commit = branchOriginCache.get(cacheKey);
+  if (commit !== undefined) {
+    return commit;
+  }
+  try {
+    commit = await fetchFirstUniqueCommit(client, project.id, project.default_branch, branch.name);
+  } catch (error) {
+    if (error instanceof GitLabError && FATAL_STATUSES.has(error.status)) {
+      throw error;
+    }
+    return null;
+  }
+  if (branchOriginCache.size >= BRANCH_ORIGIN_CACHE_LIMIT) {
+    branchOriginCache.clear();
+  }
+  branchOriginCache.set(cacheKey, commit);
+  return commit;
+}
+
+export async function collectPossibleMrs(project, branches, openSourceBranches, me, baseUrl, client) {
+  const identities = myIdentitiesOf(me);
+  const candidates = branches.filter(
+    (branch) => !branch.default && !openSourceBranches.has(branch.name),
+  );
+  const owned = await mapLimit(candidates, CONCURRENCY, async (branch) => {
+    if (isMineCommit(branch.commit, identities)) {
+      return branch;
+    }
+    if (!project.default_branch || !client) {
+      return null;
+    }
+    return isMineCommit(await firstUniqueCommitOf(project, branch, client), identities) ? branch : null;
+  });
+  return owned
+    .filter(Boolean)
     .map((branch) => ({
       key: `branch:${project.id}:${branch.name}`,
       kind: 'possibleMr',
@@ -304,16 +341,17 @@ export function collectPossibleMrs(project, branches, openSourceBranches, me, ba
     }));
 }
 
-function combinePossibleMrs(projects, branchLists, mrListsByProject, me, baseUrl) {
-  const items = projects.flatMap((project, index) => {
+async function combinePossibleMrs(projects, branchLists, mrListsByProject, me, baseUrl, client) {
+  const items = [];
+  for (const [index, project] of projects.entries()) {
     const branches = branchLists[index];
     const openMrs = mrListsByProject[index];
     if (!branches || openMrs === null) {
-      return [];
+      continue;
     }
     const openSourceBranches = new Set(openMrs.map((mr) => mr.source_branch));
-    return collectPossibleMrs(project, branches, openSourceBranches, me, baseUrl);
-  });
+    items.push(...(await collectPossibleMrs(project, branches, openSourceBranches, me, baseUrl, client)));
+  }
   return { items, unavailable: branchLists.some((list) => list === null) };
 }
 
@@ -385,7 +423,7 @@ export async function fetchRaw(client, { selectedProjectIds = null, skipSections
   const possibleMrs =
     branchLists === null
       ? { items: [], unavailable: false }
-      : combinePossibleMrs(watchedProjects, branchLists, maintainedMrLists, me, client.baseUrl);
+      : await combinePossibleMrs(watchedProjects, branchLists, maintainedMrLists, me, client.baseUrl, client);
 
   return {
     me,

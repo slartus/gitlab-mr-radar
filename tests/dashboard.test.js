@@ -89,7 +89,7 @@ describe('collectMentions', () => {
 });
 
 describe('collectPossibleMrs', () => {
-  const project = { id: 10, path_with_namespace: 'group/project' };
+  const project = { id: 10, path_with_namespace: 'group/project', default_branch: 'main' };
   const me = { id: 1, username: 'me', name: 'Me Myself' };
   const branch = (overrides = {}) => ({
     name: 'feature/x',
@@ -105,9 +105,12 @@ describe('collectPossibleMrs', () => {
     },
     ...overrides,
   });
+  const compareClient = (firstUnique) =>
+    new FakeClient({ '/projects/10/repository/compare': { commits: firstUnique ? [firstUnique] : [] } });
+  const botCommit = { author_name: 'JenkinsBot', committer_name: 'JenkinsBot', committed_date: 't' };
 
-  it('keeps my non-default, non-merged branch without an open MR', () => {
-    const items = collectPossibleMrs(project, [branch()], new Set(), me, 'https://gitlab.example.com');
+  it('keeps my non-default, non-merged branch without an open MR', async () => {
+    const items = await collectPossibleMrs(project, [branch()], new Set(), me, 'https://gitlab.example.com');
     assert.equal(items.length, 1);
     assert.equal(items[0].key, 'branch:10:feature/x');
     assert.equal(items[0].kind, 'possibleMr');
@@ -122,8 +125,8 @@ describe('collectPossibleMrs', () => {
     );
   });
 
-  it('excludes default and branches with an open MR, but keeps merged branches flagged', () => {
-    const items = collectPossibleMrs(
+  it('excludes default and branches with an open MR, but keeps merged branches flagged', async () => {
+    const items = await collectPossibleMrs(
       project,
       [
         branch(),
@@ -140,8 +143,9 @@ describe('collectPossibleMrs', () => {
     assert.equal(items.find((item) => item.title === 'feature/x').merged, false);
   });
 
-  it('matches the committer identity case-insensitively by email or username', () => {
-    const items = collectPossibleMrs(
+  it('matches the committer identity case-insensitively by email or username', async () => {
+    const client = compareClient({ author_name: 'Alice', committer_name: 'Bob' });
+    const items = await collectPossibleMrs(
       project,
       [
         branch({
@@ -154,12 +158,13 @@ describe('collectPossibleMrs', () => {
       new Set(),
       { ...me, email: 'me@example.com' },
       'https://gitlab.example.com',
+      client,
     );
     assert.deepEqual(items.map((item) => item.title).sort(), ['by-email', 'by-username']);
   });
 
-  it('falls back to authored_date when committed_date is missing', () => {
-    const items = collectPossibleMrs(
+  it('falls back to authored_date when committed_date is missing', async () => {
+    const items = await collectPossibleMrs(
       project,
       [branch({ commit: { author_name: 'Me Myself', authored_date: '2026-01-03T00:00:00Z' } })],
       new Set(),
@@ -169,8 +174,8 @@ describe('collectPossibleMrs', () => {
     assert.equal(items[0].updatedAt, '2026-01-03T00:00:00Z');
   });
 
-  it('ignores branches with no commit or no matching identity', () => {
-    const items = collectPossibleMrs(
+  it('ignores branches with no commit or no matching identity', async () => {
+    const items = await collectPossibleMrs(
       project,
       [branch({ name: 'no-commit', commit: null }), branch({ name: 'no-identity' })],
       new Set(),
@@ -180,8 +185,8 @@ describe('collectPossibleMrs', () => {
     assert.deepEqual(items, []);
   });
 
-  it('matches a committer-only identity', () => {
-    const items = collectPossibleMrs(
+  it('matches a committer-only identity', async () => {
+    const items = await collectPossibleMrs(
       project,
       [branch({ commit: { author_name: 'Alice', committer_name: 'Me Myself', committed_date: 't' } })],
       new Set(),
@@ -191,12 +196,132 @@ describe('collectPossibleMrs', () => {
     assert.deepEqual(items.map((item) => item.title), ['feature/x']);
   });
 
-  it('builds a create-MR link under a self-hosted base path', () => {
-    const items = collectPossibleMrs(project, [branch()], new Set(), me, 'https://gitlab.example.com/sub');
+  it('builds a create-MR link under a self-hosted base path', async () => {
+    const items = await collectPossibleMrs(
+      project,
+      [branch()],
+      new Set(),
+      me,
+      'https://gitlab.example.com/sub',
+    );
     assert.equal(
       items[0].webUrl,
       'https://gitlab.example.com/sub/group/project/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature%2Fx',
     );
+  });
+
+  it('attributes a bot-tipped branch by its first unique commit', async () => {
+    const client = compareClient({ author_name: 'Me Myself', author_email: 'me@example.com' });
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/bot-tip', commit: botCommit })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.deepEqual(items.map((item) => item.title), ['task/bot-tip']);
+    assert.deepEqual(client.calls.map((call) => call.path), ['/projects/10/repository/compare']);
+    assert.deepEqual(client.calls[0].params, { from: 'main', to: 'task/bot-tip', straight: false });
+  });
+
+  it('excludes a bot-tipped branch whose first unique commit is foreign', async () => {
+    const client = compareClient({ author_name: 'Alice', author_email: 'alice@example.com' });
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/foreign-origin', commit: botCommit })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.deepEqual(items, []);
+  });
+
+  it('excludes a branch with no commits unique to the default branch', async () => {
+    const client = compareClient(null);
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/stale-sync', commit: botCommit })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.deepEqual(items, []);
+  });
+
+  it('excludes a bot-tipped branch when compare fails without failing the section', async () => {
+    let failing = true;
+    const client = new FakeClient({
+      '/projects/10/repository/compare': () =>
+        failing
+          ? Promise.reject(serverError('/projects/10/repository/compare'))
+          : { commits: [{ author_name: 'Me Myself', author_email: 'me@example.com' }] },
+    });
+    const botBranch = branch({ name: 'task/error', commit: botCommit });
+    const call = () => collectPossibleMrs(project, [botBranch], new Set(), me, 'https://gitlab.example.com', client);
+    assert.deepEqual((await call()).map((item) => item.title), []);
+    failing = false;
+    assert.deepEqual((await call()).map((item) => item.title), ['task/error']);
+    assert.equal(client.calls.filter((item) => item.path === '/projects/10/repository/compare').length, 2);
+  });
+
+  it('excludes a bot-tipped branch on a network error without failing the section', async () => {
+    const client = new FakeClient({
+      '/projects/10/repository/compare': () => Promise.reject(new TypeError('fetch failed')),
+    });
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/network-error', commit: botCommit })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.deepEqual(items, []);
+  });
+
+  it('propagates fatal compare errors', async () => {
+    const client = new FakeClient({
+      '/projects/10/repository/compare': () =>
+        Promise.reject(new GitLabError(401, '401 Unauthorized', '/projects/10/repository/compare')),
+    });
+    await assert.rejects(
+      collectPossibleMrs(
+        project,
+        [branch({ name: 'task/fatal', commit: botCommit })],
+        new Set(),
+        me,
+        'https://gitlab.example.com',
+        client,
+      ),
+    );
+  });
+
+  it('reuses cached attribution while the branch tip does not change', async () => {
+    const client = compareClient({ author_name: 'Me Myself', author_email: 'me@example.com' });
+    const botBranch = branch({ name: 'task/cached', commit: { ...botCommit, id: 'sha1' } });
+    await collectPossibleMrs(project, [botBranch], new Set(), me, 'https://gitlab.example.com', client);
+    await collectPossibleMrs(project, [botBranch], new Set(), me, 'https://gitlab.example.com', client);
+    assert.equal(client.calls.filter((call) => call.path === '/projects/10/repository/compare').length, 1);
+    const renamedTip = branch({ name: 'task/cached', commit: { ...botCommit, id: 'sha2' } });
+    await collectPossibleMrs(project, [renamedTip], new Set(), me, 'https://gitlab.example.com', client);
+    assert.equal(client.calls.filter((call) => call.path === '/projects/10/repository/compare').length, 2);
+  });
+
+  it('does not request compare when the project has no default branch', async () => {
+    const client = compareClient({ author_name: 'Me Myself' });
+    const items = await collectPossibleMrs(
+      { id: 10, path_with_namespace: 'group/project', default_branch: null },
+      [branch({ name: 'task/no-default', commit: botCommit })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.deepEqual(items, []);
+    assert.deepEqual(client.calls, []);
   });
 });
 

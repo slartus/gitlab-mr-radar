@@ -6,6 +6,7 @@ import {
   GitLabClient,
   GitLabError,
   fetchDefaultBranchPipelines,
+  fetchFirstUniqueCommit,
   fetchMergeRequestStates,
   fetchPipelineFailures,
   fetchTokenInfo,
@@ -272,6 +273,44 @@ describe('fetchDefaultBranchPipelines with partial errors', () => {
   it('treats an error without a path as unknown for every project', async () => {
     const client = new FakeClient({}, { graphql: () => partialGraphql({ p0: null, p1: failed }, [{ message: 'boom' }]) });
     assert.deepEqual(await fetchDefaultBranchPipelines(client, projects), [undefined, undefined]);
+  });
+});
+
+describe('fetchFirstUniqueCommit', () => {
+  it('returns the oldest commit unique to the branch and passes refs as params', async () => {
+    const calls = [];
+    const oldest = { id: 'a1', author_name: 'Me Myself' };
+    const client = {
+      get: async (path, params) => {
+        calls.push({ path, params });
+        return { commits: [{ id: 'c3' }, { id: 'c2' }, oldest] };
+      },
+    };
+
+    const commit = await fetchFirstUniqueCommit(client, 10, 'main', 'task/multi-scanner-mode');
+
+    assert.equal(commit, oldest);
+    assert.deepEqual(calls, [
+      {
+        path: '/projects/10/repository/compare',
+        params: { from: 'main', to: 'task/multi-scanner-mode', straight: false },
+      },
+    ]);
+  });
+
+  it('returns null when the branch has no unique commits', async () => {
+    const client = { get: async () => ({ commits: [] }) };
+    assert.equal(await fetchFirstUniqueCommit(client, 10, 'main', 'feature'), null);
+  });
+
+  it('tolerates a missing commits array', async () => {
+    const client = { get: async () => ({}) };
+    assert.equal(await fetchFirstUniqueCommit(client, 10, 'main', 'feature'), null);
+  });
+
+  it('propagates client errors', async () => {
+    const client = { get: async () => { throw new GitLabError(500, 'boom', '/compare'); } };
+    await assert.rejects(fetchFirstUniqueCommit(client, 10, 'main', 'feature'));
   });
 });
 

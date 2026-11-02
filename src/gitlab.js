@@ -236,6 +236,16 @@ export async function fetchMaintainedProjects(client) {
   return projects.filter(hasMergeRequests);
 }
 
+export async function fetchFirstUniqueCommit(client, projectId, fromRef, toRef) {
+  const compare = await client.get(`/projects/${projectId}/repository/compare`, {
+    from: fromRef,
+    to: toRef,
+    straight: false,
+  });
+  const commits = compare?.commits ?? [];
+  return commits.length ? commits[commits.length - 1] : null;
+}
+
 const userIdOf = (gid) => Number(gid.split('/').pop());
 
 function reviewStatesOf(node) {
