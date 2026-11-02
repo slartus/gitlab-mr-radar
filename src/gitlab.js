@@ -243,7 +243,7 @@ export async function fetchFirstUniqueCommit(client, projectId, fromRef, toRef) 
     straight: false,
   });
   const commits = compare?.commits ?? [];
-  return commits.length ? commits[commits.length - 1] : null;
+  return commits.length ? commits[0] : null;
 }
 
 const userIdOf = (gid) => Number(gid.split('/').pop());

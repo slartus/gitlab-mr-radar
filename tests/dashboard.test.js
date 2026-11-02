@@ -225,6 +225,21 @@ describe('collectPossibleMrs', () => {
     assert.deepEqual(client.calls[0].params, { from: 'main', to: 'task/bot-tip', straight: false });
   });
 
+  it('takes the first (oldest) commit when compare returns several in chronological order', async () => {
+    const mine = { id: 'a1', author_name: 'Me Myself', author_email: 'me@example.com' };
+    const bot = { id: 'c3', author_name: 'JenkinsBot', committer_name: 'JenkinsBot' };
+    const client = new FakeClient({ '/projects/10/repository/compare': { commits: [mine, bot] } });
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/ordered', commit: bot })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.deepEqual(items.map((item) => item.title), ['task/ordered']);
+  });
+
   it('excludes a bot-tipped branch whose first unique commit is foreign', async () => {
     const client = compareClient({ author_name: 'Alice', author_email: 'alice@example.com' });
     const items = await collectPossibleMrs(

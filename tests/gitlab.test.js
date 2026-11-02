@@ -283,7 +283,7 @@ describe('fetchFirstUniqueCommit', () => {
     const client = {
       get: async (path, params) => {
         calls.push({ path, params });
-        return { commits: [{ id: 'c3' }, { id: 'c2' }, oldest] };
+        return { commits: [oldest, { id: 'c2' }, { id: 'c3' }] };
       },
     };
 
