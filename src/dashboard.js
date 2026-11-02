@@ -311,6 +311,17 @@ async function firstUniqueCommitOf(project, branch, client) {
   return commit;
 }
 
+const EXISTING_MR_STATES = new Set(['closed', 'merged']);
+
+async function existingMrOf(client, project, branch) {
+  const mrs = await client.getAll(`/projects/${project.id}/merge_requests`, {
+    source_branch: branch.name,
+    state: 'all',
+  });
+  const candidates = mrs.filter((mr) => EXISTING_MR_STATES.has(mr.state));
+  return candidates.length ? candidates.reduce((latest, mr) => (mr.iid > latest.iid ? mr : latest)) : null;
+}
+
 export async function collectPossibleMrs(project, branches, openSourceBranches, me, baseUrl, client) {
   const identities = myIdentitiesOf(me);
   const candidates = branches.filter(
@@ -325,9 +336,18 @@ export async function collectPossibleMrs(project, branches, openSourceBranches, 
     }
     return isMineCommit(await firstUniqueCommitOf(project, branch, client), identities) ? branch : null;
   });
-  return owned
-    .filter(Boolean)
-    .map((branch) => ({
+  return mapLimit(owned.filter(Boolean), CONCURRENCY, async (branch) => {
+    let existingMr = null;
+    if (client) {
+      try {
+        existingMr = await existingMrOf(client, project, branch);
+      } catch (error) {
+        if (error instanceof GitLabError && FATAL_STATUSES.has(error.status)) {
+          throw error;
+        }
+      }
+    }
+    return {
       key: `branch:${project.id}:${branch.name}`,
       kind: 'possibleMr',
       projectId: project.id,
@@ -338,7 +358,16 @@ export async function collectPossibleMrs(project, branches, openSourceBranches, 
       author: null,
       merged: Boolean(branch.merged),
       updatedAt: branch.commit?.committed_date ?? branch.commit?.authored_date ?? new Date(0).toISOString(),
-    }));
+      ...(existingMr
+        ? {
+            mrState: existingMr.state,
+            mrIid: existingMr.iid,
+            mrTitle: existingMr.title,
+            mrUrl: existingMr.web_url,
+          }
+        : {}),
+    };
+  });
 }
 
 async function combinePossibleMrs(projects, branchLists, mrListsByProject, me, baseUrl, client) {

@@ -119,7 +119,7 @@ function createElement(tag, { className, text, attrs } = {}, children = []) {
   return element;
 }
 
-const tag = (label, tone = '') => createElement('span', { className: `tag ${tone}`.trim(), text: label });
+const tag = (label, tone = '', attrs = {}) => createElement('span', { className: `tag ${tone}`.trim(), text: label, attrs });
 
 function formatRelative(isoDate) {
   const minutes = Math.round((Date.now() - new Date(isoDate).getTime()) / 60000);
@@ -278,8 +278,15 @@ function statusTag(item) {
 }
 
 function renderItem(item, sectionId, baseUrl) {
-  const targetUrl = sectionId === 'mentioned' && item.mentionUrl ? item.mentionUrl : item.webUrl;
-  const webUrl = isUnderBaseUrl(targetUrl, baseUrl) ? targetUrl : baseUrl;
+  const targetUrl =
+    (sectionId === 'possibleMrs' && item.mrUrl) ||
+    (sectionId === 'mentioned' && item.mentionUrl) ||
+    item.webUrl;
+  const webUrl = isUnderBaseUrl(targetUrl, baseUrl)
+    ? targetUrl
+    : isUnderBaseUrl(item.webUrl, baseUrl)
+      ? item.webUrl
+      : baseUrl;
   const tags = [];
   if (item.kind === 'issue') tags.push(tag('задача'));
   if (item.draft) tags.push(tag('draft'));
@@ -314,8 +321,15 @@ function renderItem(item, sectionId, baseUrl) {
   }
   if (sectionId === 'brokenBranches') tags.push(tag('CI упал', 'bad'));
   if (sectionId === 'possibleMrs') {
-    tags.push(tag('создать MR', 'ok'));
-    if (item.merged) tags.push(tag('смержена', 'warn'));
+    const mrTagAttrs = item.mrTitle ? { title: `!${item.mrIid} ${item.mrTitle}` } : {};
+    if (item.mrState === 'merged') {
+      tags.push(tag('смержена', 'warn', mrTagAttrs));
+    } else if (item.mrState === 'closed') {
+      tags.push(tag('MR закрыт', 'warn', mrTagAttrs));
+    } else {
+      tags.push(tag('создать MR', 'ok'));
+    }
+    if (item.merged && !item.mrState) tags.push(tag('смержена', 'warn'));
   }
 
   const author = sectionId === 'authored' ? null : authorLabel(item, sectionId);

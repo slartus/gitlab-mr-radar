@@ -108,6 +108,15 @@ describe('collectPossibleMrs', () => {
   const compareClient = (firstUnique) =>
     new FakeClient({ '/projects/10/repository/compare': { commits: firstUnique ? [firstUnique] : [] } });
   const botCommit = { author_name: 'JenkinsBot', committer_name: 'JenkinsBot', committed_date: 't' };
+  const branchMr = (iid, state, overrides = {}) => ({
+    iid,
+    state,
+    title: `MR ${iid}`,
+    web_url: `https://gitlab.example.com/group/project/-/merge_requests/${iid}`,
+    ...overrides,
+  });
+  const branchMrsClient = (mrs) =>
+    new FakeClient({ '/projects/10/merge_requests': mrs });
 
   it('keeps my non-default, non-merged branch without an open MR', async () => {
     const items = await collectPossibleMrs(project, [branch()], new Set(), me, 'https://gitlab.example.com');
@@ -221,8 +230,9 @@ describe('collectPossibleMrs', () => {
       client,
     );
     assert.deepEqual(items.map((item) => item.title), ['task/bot-tip']);
-    assert.deepEqual(client.calls.map((call) => call.path), ['/projects/10/repository/compare']);
-    assert.deepEqual(client.calls[0].params, { from: 'main', to: 'task/bot-tip', straight: false });
+    const compareCalls = client.calls.filter((call) => call.path === '/projects/10/repository/compare');
+    assert.deepEqual(compareCalls.map((call) => call.path), ['/projects/10/repository/compare']);
+    assert.deepEqual(compareCalls[0].params, { from: 'main', to: 'task/bot-tip', straight: false });
   });
 
   it('takes the first (oldest) commit when compare returns several in chronological order', async () => {
@@ -337,6 +347,104 @@ describe('collectPossibleMrs', () => {
     );
     assert.deepEqual(items, []);
     assert.deepEqual(client.calls, []);
+  });
+
+  it('attaches the state of an existing closed MR', async () => {
+    const client = branchMrsClient([branchMr(4945, 'closed', { title: 'ПОКА НЕ СМОТРЕТЬ' })]);
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/closed-mr' })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.equal(items.length, 1);
+    assert.equal(items[0].mrState, 'closed');
+    assert.equal(items[0].mrIid, 4945);
+    assert.equal(items[0].mrTitle, 'ПОКА НЕ СМОТРЕТЬ');
+    assert.equal(items[0].mrUrl, 'https://gitlab.example.com/group/project/-/merge_requests/4945');
+    assert.deepEqual(client.calls[0].params, { source_branch: 'task/closed-mr', state: 'all' });
+    assert.equal(
+      items[0].webUrl,
+      'https://gitlab.example.com/group/project/-/merge_requests/new?merge_request%5Bsource_branch%5D=task%2Fclosed-mr',
+    );
+  });
+
+  it('marks a branch with a merged MR', async () => {
+    const client = branchMrsClient([branchMr(5001, 'merged')]);
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/merged-mr' })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.equal(items[0].mrState, 'merged');
+    assert.equal(items[0].mrIid, 5001);
+  });
+
+  it('picks the newest closed or merged MR and ignores opened ones', async () => {
+    const client = branchMrsClient([
+      branchMr(100, 'closed'),
+      branchMr(150, 'opened'),
+      branchMr(200, 'merged'),
+    ]);
+    const items = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/newest-mr' })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      client,
+    );
+    assert.equal(items[0].mrIid, 200);
+    assert.equal(items[0].mrState, 'merged');
+  });
+
+  it('omits MR state when the lookup finds nothing or fails', async () => {
+    const noMrs = branchMrsClient([]);
+    const [withNone] = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/no-mr-info' })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      noMrs,
+    );
+    assert.ok(!('mrState' in withNone));
+    assert.ok(!('mrUrl' in withNone));
+
+    const failing = new FakeClient({
+      '/projects/10/merge_requests': serverError('/projects/10/merge_requests'),
+    });
+    const [withError] = await collectPossibleMrs(
+      project,
+      [branch({ name: 'task/mr-error' })],
+      new Set(),
+      me,
+      'https://gitlab.example.com',
+      failing,
+    );
+    assert.ok(!('mrState' in withError));
+  });
+
+  it('propagates fatal MR lookup errors', async () => {
+    const client = new FakeClient({
+      '/projects/10/merge_requests': () =>
+        Promise.reject(new GitLabError(401, '401 Unauthorized', '/projects/10/merge_requests')),
+    });
+    await assert.rejects(
+      collectPossibleMrs(
+        project,
+        [branch({ name: 'task/mr-fatal' })],
+        new Set(),
+        me,
+        'https://gitlab.example.com',
+        client,
+      ),
+    );
   });
 });
 
