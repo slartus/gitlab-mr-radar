@@ -8,8 +8,10 @@ import {
   fetchDefaultBranchPipelines,
   fetchFirstUniqueCommit,
   fetchMergeRequestStates,
+  fetchMergeRequestVerdicts,
   fetchPipelineFailures,
   fetchTokenInfo,
+  reviewVerdictOf,
 } from '../src/gitlab.js';
 import { FakeClient, partialGraphql } from './helpers.js';
 
@@ -318,5 +320,95 @@ describe('fetchTokenInfo', () => {
   it('reads expiry and scopes of the current token', async () => {
     const client = new FakeClient({ '/personal_access_tokens/self': { expires_at: null, scopes: ['read_api'] } });
     assert.deepEqual(await fetchTokenInfo(client), { expiresAt: null, scopes: ['read_api'] });
+  });
+});
+
+describe('reviewVerdictOf', () => {
+  const me = { id: 1, username: 'me' };
+  const myChanges = (createdAt, username = 'me') => ({
+    system: true,
+    body: 'requested changes',
+    createdAt,
+    author: { username },
+  });
+  const reviewRequest = (createdAt, body = 'requested review from @me', username = 'alice') => ({
+    system: true,
+    body,
+    createdAt,
+    author: { username },
+  });
+
+  it('finds my requested-changes note', () => {
+    assert.equal(reviewVerdictOf([reviewRequest('2026-01-01T00:00:00Z'), myChanges('2026-01-02T00:00:00Z')], me), 'requested_changes');
+  });
+
+  it('ignores verdict notes of other users and non-system notes', () => {
+    assert.equal(reviewVerdictOf([myChanges('2026-01-02T00:00:00Z', 'alice')], me), null);
+    assert.equal(reviewVerdictOf([{ system: false, body: 'requested changes', createdAt: 't', author: { username: 'me' } }], me), null);
+  });
+
+  it('resets my verdict when a review is requested from me afterwards', () => {
+    const notes = [myChanges('2026-01-02T00:00:00Z'), reviewRequest('2026-01-03T00:00:00Z')];
+    assert.equal(reviewVerdictOf(notes, me), null);
+  });
+
+  it('keeps my verdict when the review request predates it or names someone else', () => {
+    const notes = [reviewRequest('2026-01-01T00:00:00Z'), myChanges('2026-01-02T00:00:00Z')];
+    assert.equal(reviewVerdictOf(notes, me), 'requested_changes');
+    const otherReviewee = [myChanges('2026-01-02T00:00:00Z'), reviewRequest('2026-01-03T00:00:00Z', 'requested review from @bob')];
+    assert.equal(reviewVerdictOf(otherReviewee, me), 'requested_changes');
+  });
+
+  it('handles multi-reviewer requests and my own re-reviews by the latest note', () => {
+    const multi = [
+      myChanges('2026-01-02T00:00:00Z'),
+      reviewRequest('2026-01-03T00:00:00Z', 'requested review from @bob and @me'),
+    ];
+    assert.equal(reviewVerdictOf(multi, me), null);
+    const reReviewed = [...multi, myChanges('2026-01-04T00:00:00Z')];
+    assert.equal(reviewVerdictOf(reReviewed, me), 'requested_changes');
+  });
+
+  it('does not reset on a mention of another user with a name-prefix username', () => {
+    const meLike = { id: 1, username: 'artem' };
+    const notes = [
+      { system: true, body: 'requested changes', createdAt: '2026-01-02T00:00:00Z', author: { username: 'artem' } },
+      reviewRequest('2026-01-03T00:00:00Z', 'requested review from @artem2', 'alice'),
+    ];
+    assert.equal(reviewVerdictOf(notes, meLike), 'requested_changes');
+  });
+
+  it('matches verdict bodies case-insensitively and sorts unsorted notes', () => {
+    const unsorted = [
+      { system: true, body: 'Requested Changes', createdAt: '2026-01-02T00:00:00Z', author: { username: 'Me' } },
+      reviewRequest('2026-01-01T00:00:00Z'),
+    ];
+    assert.equal(reviewVerdictOf(unsorted, me), 'requested_changes');
+  });
+});
+
+describe('fetchMergeRequestVerdicts', () => {
+  it('maps activity notes per merge request and skips incomplete nodes', async () => {
+    const graphql = (query, variables) => {
+      assert.ok(query.includes('MergeRequestVerdicts'));
+      assert.ok(query.includes('ONLY_ACTIVITY'));
+      assert.deepEqual(variables, { fullPath: 'group/project', iids: ['1', '2'] });
+      return {
+        project: {
+          mergeRequests: {
+            nodes: [
+              { iid: '1', notes: { nodes: [{ system: true, body: 'requested changes', author: { username: 'me' } }] } },
+              { iid: '2', notes: null },
+            ],
+          },
+        },
+      };
+    };
+    const client = new FakeClient({}, { graphql });
+
+    const verdicts = await fetchMergeRequestVerdicts(client, 'group/project', [1, 2]);
+
+    assert.equal(verdicts.size, 1);
+    assert.deepEqual(verdicts.get(1), [{ system: true, body: 'requested changes', author: { username: 'me' } }]);
   });
 });

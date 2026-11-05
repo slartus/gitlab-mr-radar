@@ -36,7 +36,23 @@ const mergeRequestStatesQuery = (withReviewState) => `
   }
 `;
 
+const mergeRequestVerdictsQuery = `
+  query MergeRequestVerdicts($fullPath: ID!, $iids: [String!]) {
+    project(fullPath: $fullPath) {
+      mergeRequests(iids: $iids, first: 100) {
+        nodes {
+          iid
+          notes(filter: ONLY_ACTIVITY, last: 100) {
+            nodes { system body createdAt author { username } }
+          }
+        }
+      }
+    }
+  }
+`;
+
 export const MERGE_REQUEST_STATES_BATCH = 100;
+export const MERGE_REQUEST_VERDICTS_BATCH = 25;
 export const DEFAULT_BRANCH_PIPELINES_BATCH = 20;
 const DEFAULT_BRANCH_PIPELINES_DEPTH = 5;
 const CONCLUSIVE_PIPELINE_STATUSES = new Set(['success', 'failed']);
@@ -274,6 +290,36 @@ export async function fetchMergeRequestStates(client, fullPath, iids, { withRevi
       },
     ]),
   );
+}
+
+export async function fetchMergeRequestVerdicts(client, fullPath, iids) {
+  const data = await client.graphql(mergeRequestVerdictsQuery, { fullPath, iids: iids.map(String) });
+  return new Map(
+    (data.project?.mergeRequests?.nodes ?? [])
+      .filter((node) => Array.isArray(node.notes?.nodes))
+      .map((node) => [Number(node.iid), node.notes.nodes]),
+  );
+}
+
+const REQUESTED_CHANGES_NOTE = 'requested changes';
+const REVIEW_REQUEST_PREFIX = 'requested review from';
+
+export function reviewVerdictOf(notes, me) {
+  const myUsername = String(me.username ?? '').toLowerCase();
+  const events = [...notes]
+    .filter((note) => note.system && note.author?.username)
+    .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
+  let verdict = null;
+  for (const note of events) {
+    const body = (note.body ?? '').trim().toLowerCase();
+    if (body === REQUESTED_CHANGES_NOTE && note.author.username.toLowerCase() === myUsername) {
+      verdict = 'requested_changes';
+    } else if (body.startsWith(REVIEW_REQUEST_PREFIX)) {
+      const mentioned = [...body.matchAll(/@([\w_.-]+)/g)].map((match) => match[1].toLowerCase());
+      if (mentioned.includes(myUsername)) verdict = null;
+    }
+  }
+  return verdict;
 }
 
 export async function fetchDefaultBranchPipelines(client, projects) {

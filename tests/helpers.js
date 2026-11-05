@@ -119,6 +119,31 @@ export function statesGraphql(statesByPath) {
   };
 }
 
+export function verdictsGraphql(notesByPath) {
+  return (query, variables) => {
+    if (!query.includes('MergeRequestVerdicts')) {
+      throw new GitLabError(404, 'Unexpected GraphQL query', '/graphql');
+    }
+    const notes = notesByPath[variables.fullPath] ?? {};
+    return {
+      project: {
+        mergeRequests: {
+          nodes: variables.iids
+            .filter((iid) => notes[iid])
+            .map((iid) => ({ iid, notes: { nodes: notes[iid] } })),
+        },
+      },
+    };
+  };
+}
+
+export function activityNote(author, body, createdAt) {
+  return { author, system: true, body, createdAt };
+}
+
+export const withVerdicts = (statesHandler, verdictsHandler) => (query, variables) =>
+  query.includes('MergeRequestVerdicts') ? verdictsHandler(query, variables) : statesHandler(query, variables);
+
 export function emptyDashboardRoutes() {
   return {
     '/user': ME,

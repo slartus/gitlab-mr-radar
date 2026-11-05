@@ -9,6 +9,7 @@ import {
   BOB,
   FakeClient,
   ME,
+  activityNote,
   emptyDashboardRoutes,
   mergeRequestsRoute,
   mr,
@@ -16,6 +17,8 @@ import {
   partialGraphql,
   serverError,
   statesGraphql,
+  verdictsGraphql,
+  withVerdicts,
 } from './helpers.js';
 
 const approvals = (approvedBy = [], userHasApproved = false) => ({
@@ -763,6 +766,7 @@ describe('collectDashboard with GraphQL merge request states', () => {
         '10!1': { stateKey: '2026-01-01T00:00:00Z:1:1:0', threadsAwaitingReply: 1 },
         '10!2': { stateKey: '2026-01-01T00:00:00Z:2:1:0', threadsAwaitingReply: 1 },
       },
+      verdictEntries: {},
     });
   });
 
@@ -1247,5 +1251,121 @@ describe('collectDashboard extras', () => {
       .filter(({ path, params }) => path === '/merge_requests' && params.with_merge_status_recheck)
       .map(({ params }) => params.scope);
     assert.deepEqual(scopes.sort(), ['assigned_to_me', 'created_by_me']);
+  });
+});
+
+describe('collectDashboard review verdicts from activity notes', () => {
+  const maintained = mr({ iid: 3, author: BOB });
+  const myChangesNote = activityNote(ME, 'requested changes', '2026-01-02T00:00:00Z');
+  const reRequestNote = activityNote(BOB, 'requested review from @me', '2026-01-03T00:00:00Z');
+  const routes = (extra = {}) => ({
+    ...emptyDashboardRoutes(),
+    '/projects': [{ id: 10 }],
+    '/projects/10/merge_requests': [maintained],
+    ...extra,
+  });
+  const states = () => ({ 'group/project': { 3: { approvers: [], notes: 5, resolvable: 0, resolved: 0 } } });
+
+  it('keeps a maintained MR where I asked for changes in the section but out of the badge', async () => {
+    const client = new FakeClient(
+      routes(),
+      { graphql: withVerdicts(statesGraphql(states()), verdictsGraphql({ 'group/project': { 3: [myChangesNote] } })) },
+    );
+
+    const dashboard = await collectDashboard(client);
+
+    assert.deepEqual(dashboard.sections.awaitingApproval.map((item) => [item.key, item.myReviewState]), [
+      ['10!3', 'requested_changes'],
+    ]);
+    assert.equal(deriveView(dashboard).counts.waiting, 0);
+    assert.deepEqual(dashboard.threadCache.verdictEntries, {
+      '10!3': { updatedAt: '2026-01-01T00:00:00Z', verdict: 'requested_changes' },
+    });
+  });
+
+  it('rescans only when the MR was updated, and resets the verdict on a new review request', async () => {
+    const notesByPath = { 'group/project': { 3: [myChangesNote, reRequestNote] } };
+    const counter = { verdictQueries: 0 };
+    const graphql = () =>
+      withVerdicts(statesGraphql(states()), (query, variables) => {
+        counter.verdictQueries++;
+        return verdictsGraphql(notesByPath)(query, variables);
+      });
+    const first = await collectDashboard(new FakeClient(routes(), { graphql: graphql() }));
+    assert.equal(first.sections.awaitingApproval[0].myReviewState, null);
+    assert.equal(deriveView(first).counts.waiting, 1);
+
+    const second = await collectDashboard(new FakeClient(routes(), { graphql: graphql() }), {
+      threadCache: first.threadCache,
+    });
+    assert.equal(counter.verdictQueries, 1);
+    assert.deepEqual(second.sections.awaitingApproval.map((item) => [item.key, item.myReviewState]), [['10!3', null]]);
+
+    const updated = mr({ iid: 3, author: BOB, updatedAt: '2026-01-04T00:00:00Z' });
+    const third = await collectDashboard(
+      new FakeClient(routes({ '/projects/10/merge_requests': [updated] }), { graphql: graphql() }),
+      { threadCache: second.threadCache },
+    );
+    assert.equal(counter.verdictQueries, 2);
+    assert.equal(third.sections.awaitingApproval[0].myReviewState, null);
+  });
+
+  it('keeps the verdict cached without rescans while the MR is unchanged', async () => {
+    const counter = { verdictQueries: 0 };
+    const graphql = withVerdicts(
+      statesGraphql(states()),
+      (query, variables) => {
+        counter.verdictQueries++;
+        return verdictsGraphql({ 'group/project': { 3: [myChangesNote] } })(query, variables);
+      },
+    );
+    const first = await collectDashboard(new FakeClient(routes(), { graphql }));
+    assert.equal(first.sections.awaitingApproval[0].myReviewState, 'requested_changes');
+    assert.equal(counter.verdictQueries, 1);
+
+    const second = await collectDashboard(new FakeClient(routes(), { graphql }), { threadCache: first.threadCache });
+    assert.equal(counter.verdictQueries, 1);
+    assert.equal(second.sections.awaitingApproval[0].myReviewState, 'requested_changes');
+  });
+
+  it('finds my requested changes on a reviewer MR whose interaction state was reset', async () => {
+    const reviewing = mr({ iid: 1, updatedAt: '2026-01-05T00:00:00Z' });
+    const client = new FakeClient(
+      { ...emptyDashboardRoutes(), '/merge_requests': mergeRequestsRoute({ reviewing: [reviewing] }) },
+      {
+        graphql: withVerdicts(
+          statesGraphql({ 'group/project': { 1: { reviewStates: { [ME.id]: 'UNREVIEWED' } } } }),
+          verdictsGraphql({ 'group/project': { 1: [myChangesNote, activityNote(BOB, 'added 1 commit', '2026-01-03T00:00:00Z')] } }),
+        ),
+      },
+    );
+
+    const dashboard = await collectDashboard(client);
+
+    assert.equal(dashboard.sections.reviewing[0].myReviewState, 'requested_changes');
+    assert.equal(deriveView(dashboard).counts.waiting, 0);
+  });
+
+  it('disables the verdict scan when the GitLab schema does not know the notes filter', async () => {
+    const counter = { verdictQueries: 0 };
+    const client = new FakeClient(
+      routes(),
+      {
+        graphql: withVerdicts(
+          statesGraphql(states()),
+          (query) => {
+            counter.verdictQueries++;
+            throw new GitLabError(200, "GraphQL: Field 'notes' doesn't accept argument 'filter'", '/graphql');
+          },
+        ),
+      },
+    );
+
+    const dashboard = await collectDashboard(client);
+
+    assert.equal(counter.verdictQueries, 1);
+    assert.equal(dashboard.sections.awaitingApproval[0].myReviewState, null);
+    assert.deepEqual(dashboard.threadCache.verdictEntries, {});
+    assert.equal(deriveView(dashboard).counts.waiting, 1);
   });
 });

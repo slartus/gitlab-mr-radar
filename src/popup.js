@@ -294,7 +294,7 @@ function renderItem(item, sectionId, baseUrl) {
   if (sectionId === SNOOZED_SECTION.id) tags.push(tag(formatSnooze(item.snooze)));
   if (sectionId === 'mentioned' && item.mentionCount > 1) tags.push(tag(`упоминаний: ${item.mentionCount}`, 'warn'));
   if (['reviewing', 'assigned'].includes(sectionId) && item.approvedByMe) tags.push(tag('я апрувнул', 'ok'));
-  if (sectionId === 'reviewing' && !item.approvedByMe && awaitsAuthor(item)) {
+  if (['reviewing', 'assigned', 'awaitingApproval'].includes(sectionId) && !item.approvedByMe && awaitsAuthor(item)) {
     tags.push(tag(item.myReviewState === 'requested_changes' ? 'я попросил правки' : 'я отревьюил'));
   }
   if (item.threadsAwaitingReply > 0) tags.push(tag(`ждут ответа: ${item.threadsAwaitingReply}`, 'warn'));

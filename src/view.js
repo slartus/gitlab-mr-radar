@@ -52,7 +52,7 @@ function countActionable({ reviewing, assigned, mentioned, awaitingApproval, thr
     ...mentioned.map((item) => item.key),
     ...reviewing.filter(awaitsMyReview).map((item) => item.key),
     ...assigned.filter(awaitsMyReview).map((item) => item.key),
-    ...awaitingApproval.map((item) => item.key),
+    ...awaitingApproval.filter((item) => !awaitsAuthor(item)).map((item) => item.key),
     ...threads.map((item) => item.key),
   ]);
   return { waiting: waiting.size, failedCi: authored.filter(isFailedPipeline).length };
@@ -97,7 +97,13 @@ const NOTIFICATION_RULES = [
     sources: ['mentionsUnavailable', 'assignedUnavailable'],
     isNew: (item, prev) => !prev || item.mentionCount > prev.mentionCount || item.mentionedAt > prev.mentionedAt,
   },
-  { type: 'approval', section: 'awaitingApproval', sources: ['assignedUnavailable'], isNew: (item, prev) => !prev },
+  {
+    type: 'approval',
+    section: 'awaitingApproval',
+    sources: ['assignedUnavailable'],
+    applies: awaitsMyReview,
+    isNew: (item, prev) => !prev,
+  },
   {
     type: 'thread',
     section: 'threads',

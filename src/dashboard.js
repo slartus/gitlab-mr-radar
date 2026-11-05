@@ -2,6 +2,7 @@ import {
   DEFAULT_BRANCH_PIPELINES_BATCH,
   GitLabError,
   MERGE_REQUEST_STATES_BATCH,
+  MERGE_REQUEST_VERDICTS_BATCH,
   fetchApprovals,
   fetchAuthoredPipelines,
   fetchDefaultBranchPipelines,
@@ -9,8 +10,10 @@ import {
   fetchFirstUniqueCommit,
   fetchMaintainedProjects,
   fetchMergeRequestStates,
+  fetchMergeRequestVerdicts,
   fetchPipelineFailures,
   fetchTokenInfo,
+  reviewVerdictOf,
 } from './gitlab.js';
 
 const CONCURRENCY = 6;
@@ -19,6 +22,7 @@ const FATAL_STATUSES = new Set([401, 429]);
 const MENTION_ACTIONS = new Set(['mentioned', 'directly_addressed']);
 const MENTION_TARGET_TYPES = ['MergeRequest', 'Issue'];
 const REVIEW_STATE_SCHEMA_ERROR = /mergeRequestInteraction|reviewState|MergeRequestReviewer/;
+const REVIEW_VERDICT_SCHEMA_ERROR = /NotesFilterType|ONLY_ACTIVITY|argument 'filter'/;
 
 export const mrKey = (mr) => `${mr.project_id}!${mr.iid}`;
 const issueKey = (issue) => `${issue.project_id}#${issue.iid}`;
@@ -112,12 +116,17 @@ async function fetchDetails(client, mr, me, shouldCheckThreads) {
 const threadStateKey = (mr, state) =>
   `${mr.updated_at}:${state.userNotesCount}:${state.unresolvedThreads}:${state.resolvedThreads}`;
 
-async function detailsFromState(client, mr, me, state, shouldCheckThreads, threadCache) {
+async function detailsFromState(client, mr, me, state, shouldCheckThreads, threadCache, verdict) {
+  const interactionState = state.reviewStates ? (state.reviewStates[me.id] ?? null) : null;
   const details = {
     approvedByMe: state.approverIds.includes(me.id),
     approvalsCount: state.approverIds.length,
     approverNames: state.approverNames ?? [],
-    myReviewState: state.reviewStates ? (state.reviewStates[me.id] ?? null) : undefined,
+    myReviewState: state.reviewStates
+      ? interactionState && interactionState !== 'unreviewed'
+        ? interactionState
+        : (verdict ?? interactionState ?? null)
+      : undefined,
     threadsAwaitingReply: 0,
   };
   if (!shouldCheckThreads || state.userNotesCount === 0 || state.unresolvedThreads <= 0) {
@@ -141,6 +150,9 @@ function chunk(items, size) {
 const isReviewStateSchemaError = (error) =>
   error instanceof GitLabError && error.path === '/graphql' && REVIEW_STATE_SCHEMA_ERROR.test(error.message);
 
+const isReviewVerdictSchemaError = (error) =>
+  error instanceof GitLabError && error.path === '/graphql' && REVIEW_VERDICT_SCHEMA_ERROR.test(error.message);
+
 async function fetchProjectStates(client, path, iids, reviewStateSupport) {
   if (!reviewStateSupport.enabled) {
     return fetchMergeRequestStates(client, path, iids);
@@ -155,6 +167,47 @@ async function fetchProjectStates(client, path, iids, reviewStateSupport) {
     reviewStateSupport.enabled = false;
     return states;
   }
+}
+
+async function fetchProjectVerdicts(client, path, iids, verdictSupport) {
+  if (!verdictSupport.enabled) {
+    return null;
+  }
+  try {
+    return await fetchMergeRequestVerdicts(client, path, iids);
+  } catch (error) {
+    if (!isReviewVerdictSchemaError(error)) {
+      throw error;
+    }
+    verdictSupport.enabled = false;
+    return null;
+  }
+}
+
+async function fetchVerdictNotes(client, mrs, verdictSupport) {
+  const iidsByPath = new Map();
+  mrs.forEach((mr) => {
+    const path = projectPathOf(mr);
+    if (path) {
+      iidsByPath.set(path, [...(iidsByPath.get(path) ?? []), mr]);
+    }
+  });
+  const batches = [...iidsByPath].flatMap(([path, pathMrs]) =>
+    chunk(pathMrs, MERGE_REQUEST_VERDICTS_BATCH).map((batch) => ({ path, batch })),
+  );
+  const results = await mapLimit(batches, CONCURRENCY, ({ path, batch }) =>
+    optional(fetchProjectVerdicts(client, path, batch.map((mr) => mr.iid), verdictSupport)),
+  );
+  const notes = new Map();
+  batches.forEach(({ batch }, index) =>
+    batch.forEach((mr) => {
+      const nodes = results[index]?.get(mr.iid);
+      if (nodes) {
+        notes.set(mrKey(mr), nodes);
+      }
+    }),
+  );
+  return notes;
 }
 
 async function fetchStates(client, mrs) {
@@ -491,15 +544,55 @@ export async function enrich(client, raw, threadCache = null, skipSections = [])
   const threadWatchKeys = new Set([...authoredMrs, ...reviewingMrs, ...assignedMrs].map(mrKey));
   const allMrs = uniqueBy([...authoredMrs, ...reviewingMrs, ...assignedMrs, ...maintainedMrs], mrKey);
   const cachedThreads = threadCache?.userId === me.id ? threadCache.entries : {};
+  const cachedVerdicts = threadCache?.userId === me.id ? (threadCache.verdictEntries ?? {}) : {};
 
   const states = await fetchStates(client, allMrs);
+
+  const verdictEntries = { ...cachedVerdicts };
+  const verdicts = new Map();
+  if (n.reviewing || n.awaitingApproval) {
+    const verdictSupport = { enabled: true };
+    const candidates = allMrs.filter((mr) => {
+      if (mr.author.id === me.id) {
+        return false;
+      }
+      const state = states.get(mrKey(mr));
+      if (!state?.reviewStates) {
+        return false;
+      }
+      const interaction = state.reviewStates[me.id];
+      if (interaction && interaction !== 'unreviewed') {
+        return false;
+      }
+      const entry = verdictEntries[mrKey(mr)];
+      return !entry || entry.updatedAt !== mr.updated_at;
+    });
+    const notes = candidates.length ? await fetchVerdictNotes(client, candidates, verdictSupport) : new Map();
+    candidates.forEach((mr) => {
+      const nodes = notes.get(mrKey(mr));
+      if (nodes) {
+        const verdict = reviewVerdictOf(nodes, me);
+        verdicts.set(mrKey(mr), verdict);
+        verdictEntries[mrKey(mr)] = { updatedAt: mr.updated_at, verdict };
+      }
+    });
+    const liveKeys = new Set(allMrs.map(mrKey));
+    Object.keys(verdictEntries).forEach((key) => {
+      if (!liveKeys.has(key)) {
+        delete verdictEntries[key];
+      }
+    });
+  }
+  const verdictOf = (mr) =>
+    verdicts.has(mrKey(mr)) ? verdicts.get(mrKey(mr)) : verdictEntries[mrKey(mr)]?.verdict;
+
   const skippedErrors = [];
   const results = await mapLimit(allMrs, CONCURRENCY, (mr) =>
     orSkip(async () => {
       const shouldCheckThreads = threadWatchKeys.has(mrKey(mr));
       const state = states.get(mrKey(mr));
       return state
-        ? detailsFromState(client, mr, me, state, shouldCheckThreads, cachedThreads)
+        ? detailsFromState(client, mr, me, state, shouldCheckThreads, cachedThreads, verdictOf(mr))
         : { details: await fetchDetails(client, mr, me, shouldCheckThreads) };
     }, skippedErrors),
   );
@@ -522,7 +615,7 @@ export async function enrich(client, raw, threadCache = null, skipSections = [])
     details: detailsByKey,
     pipelineFailures: new Map(failedAuthored.map((mr, index) => [mrKey(mr), failures[index]])),
     skippedMrs: results.filter((result) => result === null).length,
-    threadCache: { userId: me.id, entries: threadEntries },
+    threadCache: { userId: me.id, entries: threadEntries, verdictEntries },
   };
 }
 
