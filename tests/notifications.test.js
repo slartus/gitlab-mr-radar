@@ -73,6 +73,13 @@ describe('collectNotificationEvents', () => {
     assert.deepEqual(changes(previous, next), ['review:2']);
   });
 
+  it('reports an approval again when the author asks for it after my requested changes', () => {
+    const previous = dashboard({ awaitingApproval: [mrItem('1', { myReviewState: 'requested_changes' })] });
+    const asked = dashboard({ awaitingApproval: [mrItem('1', { myReviewState: null })] });
+    assert.deepEqual(changes(previous, asked), ['approval:1']);
+    assert.deepEqual(changes(asked, asked), []);
+  });
+
   it('reports a review again when the author asks for it after my requested changes', () => {
     const previous = dashboard({ reviewing: [mrItem('1', { myReviewState: 'requested_changes' })] });
     const asked = dashboard({ reviewing: [mrItem('1', { myReviewState: 'unreviewed' })] });

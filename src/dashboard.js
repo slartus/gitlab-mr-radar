@@ -583,8 +583,13 @@ export async function enrich(client, raw, threadCache = null, skipSections = [])
       }
     });
   }
-  const verdictOf = (mr) =>
-    verdicts.has(mrKey(mr)) ? verdicts.get(mrKey(mr)) : verdictEntries[mrKey(mr)]?.verdict;
+  const verdictOf = (mr) => {
+    if (verdicts.has(mrKey(mr))) {
+      return verdicts.get(mrKey(mr));
+    }
+    const entry = verdictEntries[mrKey(mr)];
+    return entry?.updatedAt === mr.updated_at ? entry.verdict : undefined;
+  };
 
   const skippedErrors = [];
   const results = await mapLimit(allMrs, CONCURRENCY, (mr) =>

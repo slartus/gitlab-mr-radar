@@ -1346,6 +1346,28 @@ describe('collectDashboard review verdicts from activity notes', () => {
     assert.equal(deriveView(dashboard).counts.waiting, 0);
   });
 
+  it('drops a cached verdict of an updated MR when its notes could not be loaded', async () => {
+    const first = await collectDashboard(
+      new FakeClient(routes(), {
+        graphql: withVerdicts(statesGraphql(states()), verdictsGraphql({ 'group/project': { 3: [myChangesNote] } })),
+      }),
+    );
+    assert.equal(first.sections.awaitingApproval[0].myReviewState, 'requested_changes');
+
+    const updated = mr({ iid: 3, author: BOB, updatedAt: '2026-01-04T00:00:00Z' });
+    const second = await collectDashboard(
+      new FakeClient(routes({ '/projects/10/merge_requests': [updated] }), {
+        graphql: withVerdicts(statesGraphql(states()), () => {
+          throw new GitLabError(502, 'Bad Gateway', '/graphql');
+        }),
+      }),
+      { threadCache: first.threadCache },
+    );
+
+    assert.equal(second.sections.awaitingApproval[0].myReviewState, null);
+    assert.equal(deriveView(second).counts.waiting, 1);
+  });
+
   it('disables the verdict scan when the GitLab schema does not know the notes filter', async () => {
     const counter = { verdictQueries: 0 };
     const client = new FakeClient(

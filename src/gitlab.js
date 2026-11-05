@@ -315,7 +315,7 @@ export function reviewVerdictOf(notes, me) {
     if (body === REQUESTED_CHANGES_NOTE && note.author.username.toLowerCase() === myUsername) {
       verdict = 'requested_changes';
     } else if (body.startsWith(REVIEW_REQUEST_PREFIX)) {
-      const mentioned = [...body.matchAll(/@([\w_.-]+)/g)].map((match) => match[1].toLowerCase());
+      const mentioned = [...body.matchAll(/@([\w.-]*[\w-])/g)].map((match) => match[1].toLowerCase());
       if (mentioned.includes(myUsername)) verdict = null;
     }
   }

@@ -102,7 +102,7 @@ const NOTIFICATION_RULES = [
     section: 'awaitingApproval',
     sources: ['assignedUnavailable'],
     applies: awaitsMyReview,
-    isNew: (item, prev) => !prev,
+    isNew: (item, prev) => !prev || !awaitsMyReview(prev),
   },
   {
     type: 'thread',

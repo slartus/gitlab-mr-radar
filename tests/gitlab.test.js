@@ -378,6 +378,13 @@ describe('reviewVerdictOf', () => {
     assert.equal(reviewVerdictOf(notes, meLike), 'requested_changes');
   });
 
+  it('resets for dotted usernames and ignores trailing punctuation after a mention', () => {
+    const dotted = { id: 1, username: 'a.slinkin' };
+    const changes = { system: true, body: 'requested changes', createdAt: '2026-01-02T00:00:00Z', author: { username: 'a.slinkin' } };
+    assert.equal(reviewVerdictOf([changes, reviewRequest('2026-01-03T00:00:00Z', 'requested review from @a.slinkin.')], dotted), null);
+    assert.equal(reviewVerdictOf([myChanges('2026-01-02T00:00:00Z'), reviewRequest('2026-01-03T00:00:00Z', 'requested review from @me.')], me), null);
+  });
+
   it('matches verdict bodies case-insensitively and sorts unsorted notes', () => {
     const unsorted = [
       { system: true, body: 'Requested Changes', createdAt: '2026-01-02T00:00:00Z', author: { username: 'Me' } },
