@@ -3,7 +3,6 @@ export const DEFAULT_INTERVAL_MINUTES = 5;
 export const MIN_INTERVAL_MINUTES = 1;
 export const FAST_REFRESH_MINUTES = 1;
 export const MAX_FAST_REFRESH_MINUTES = 60;
-export const MAX_INTERVAL_MINUTES = 120;
 export const MAX_APPROVAL_THRESHOLD = 20;
 
 export const PROJECT_FILTER_MODES = {
@@ -35,6 +34,8 @@ export const hasNotificationsPermission = () =>
 export const UPDATE_REPOSITORY = 'slartus/gitlab-mr-radar';
 export const UPDATE_CHECK_ORIGIN = 'https://api.github.com/*';
 export const UPDATE_CHECK_INTERVAL_MINUTES = 24 * 60;
+
+export const isAutoRefreshEnabled = (intervalMinutes) => Number(intervalMinutes) > 0;
 
 export function refreshPeriodMinutes(intervalMinutes) {
   return Math.max(MIN_INTERVAL_MINUTES, Number(intervalMinutes) || DEFAULT_INTERVAL_MINUTES);

@@ -118,6 +118,35 @@ describe('background refresh', () => {
     assert.equal(off.chrome.alarms.all.get('refresh').delayInMinutes, 15);
   });
 
+  it('schedules the refresh beyond the old 120-minute cap', async () => {
+    const { chrome, refresh } = await setup({ settings: { intervalMinutes: 720 } });
+
+    await refresh();
+
+    assert.deepEqual(chrome.alarms.all.get('refresh'), { delayInMinutes: 720, periodInMinutes: 720 });
+  });
+
+  it('does not schedule automatic refresh when the interval is 0, manual refresh still works', async () => {
+    const { chrome, refresh, stored } = await setup({ reviewing: [restMr(1)], settings: { intervalMinutes: 0 } });
+
+    await refresh();
+
+    assert.equal(chrome.alarms.all.get('refresh'), undefined);
+    assert.deepEqual((await stored('dashboard')).sections.reviewing.map((item) => item.key), ['10!1']);
+    assert.equal(chrome.action.badge.text, '1');
+  });
+
+  it('cancels the scheduled refresh when the interval is switched to 0', async () => {
+    const { chrome, refresh, stored } = await setup({ reviewing: [restMr(1)], settings: { intervalMinutes: 15 } });
+    await refresh();
+    assert.deepEqual(chrome.alarms.all.get('refresh'), { delayInMinutes: 15, periodInMinutes: 15 });
+
+    await chrome.storage.local.set({ settings: { ...(await stored('settings')), intervalMinutes: 0 } });
+    await settle();
+
+    assert.equal(chrome.alarms.all.get('refresh'), undefined);
+  });
+
   it('keeps the last dashboard and marks the error when GitLab rejects the token', async () => {
     const { chrome, api, refresh, stored } = await setup({ reviewing: [restMr(1)] });
     await refresh();

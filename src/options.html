@@ -52,7 +52,8 @@
     </label>
     <label class="field">
       Интервал обновления, минут
-      <input id="interval" type="number" required>
+      <div class="hint">0 — не обновлять автоматически.</div>
+      <input id="interval" type="number" min="0" required>
     </label>
     <label class="field">
       Проверки, которые не считаются падением CI
@@ -61,7 +62,7 @@
     </label>
     <label class="checkbox">
       <input id="fast-refresh" type="checkbox">
-      Обновлять раз в минуту, пока в моих MR идёт CI или GitLab пересчитывает статус мёржа
+      Обновлять раз в минуту, пока в моих MR идёт CI или GitLab пересчитывает статус мёржа (не действует при интервале 0)
     </label>
     <label class="checkbox">
       <input id="check-updates" type="checkbox">

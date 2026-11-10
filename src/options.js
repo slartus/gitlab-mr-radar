@@ -2,8 +2,6 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_INTERVAL_MINUTES,
   MAX_APPROVAL_THRESHOLD,
-  MAX_INTERVAL_MINUTES,
-  MIN_INTERVAL_MINUTES,
   NOTIFICATIONS_PERMISSION,
   PROJECT_FILTER_MODES,
   PROJECT_LABEL_MODES,
@@ -45,8 +43,6 @@ const projectSearch = document.getElementById('project-search');
 const projectList = document.getElementById('projects');
 const projectCounter = document.getElementById('project-counter');
 
-intervalInput.min = String(MIN_INTERVAL_MINUTES);
-intervalInput.max = String(MAX_INTERVAL_MINUTES);
 approvalThresholdInput.max = String(MAX_APPROVAL_THRESHOLD);
 
 const stored = (await chrome.storage.local.get(STORAGE_KEYS.settings))[STORAGE_KEYS.settings] ?? {};
@@ -423,10 +419,7 @@ form.addEventListener('submit', async (event) => {
     [STORAGE_KEYS.settings]: {
       baseUrl,
       token: tokenInput.value.trim(),
-      intervalMinutes: Math.min(
-        MAX_INTERVAL_MINUTES,
-        Math.max(MIN_INTERVAL_MINUTES, Number(intervalInput.value) || DEFAULT_INTERVAL_MINUTES),
-      ),
+      intervalMinutes: Math.max(0, Math.trunc(Number(intervalInput.value) || 0)),
       fastRefreshWhileCi: fastRefreshInput.checked,
       projectFilterMode,
       projectLabelMode: labelModeInputs.find((input) => input.checked)?.value ?? PROJECT_LABEL_MODES.name,

@@ -9,6 +9,7 @@ import {
   compareVersions,
   hasHostPermission,
   hasNotificationsPermission,
+  isAutoRefreshEnabled,
   notificationTargetKey,
   refreshDelayMinutes,
   refreshPeriodMinutes,
@@ -357,6 +358,10 @@ async function trackFastRefresh(fast) {
 
 async function scheduleRefresh({ immediately = false, fast = null } = {}) {
   const { intervalMinutes, fastRefreshWhileCi } = await loadSettings();
+  if (!isAutoRefreshEnabled(intervalMinutes)) {
+    await chrome.alarms.clear(ALARM_NAME);
+    return;
+  }
   const fastSince = fast === null ? null : await trackFastRefresh(fast && fastRefreshWhileCi);
   await chrome.alarms.create(ALARM_NAME, {
     delayInMinutes: refreshDelayMinutes({ immediately, fastSince, intervalMinutes }),

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 
-import { compareVersions, normalizeBaseUrl, parseCheckNames, refreshDelayMinutes } from '../src/config.js';
+import { compareVersions, isAutoRefreshEnabled, normalizeBaseUrl, parseCheckNames, refreshDelayMinutes } from '../src/config.js';
 import {
   GitLabClient,
   GitLabError,
@@ -73,6 +73,14 @@ describe('GitLabClient', () => {
     const client = new GitLabClient(BASE_URL, 't');
     assert.deepEqual(await client.graphqlPartial('{ x }'), body);
     await assert.rejects(client.graphql('{ x }'), /GraphQL: boom/);
+  });
+});
+
+describe('isAutoRefreshEnabled', () => {
+  it('treats 0 as disabled and positive intervals as enabled', () => {
+    assert.equal(isAutoRefreshEnabled(0), false);
+    assert.equal(isAutoRefreshEnabled(120), true);
+    assert.equal(isAutoRefreshEnabled(720), true);
   });
 });
 
